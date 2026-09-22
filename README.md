@@ -1,6 +1,6 @@
-# lazaretto-guard
-
 **What leaves your machine: the names and exact versions of packages a command is about to install, sent over HTTPS to `https://lazaretto.dev/check`, plus a fixed client string `lazaretto-guard/<version>`. Nothing else. Not the command, not the file paths, not the working directory, not the project name, not an API key, because there is no key on this path. There is also a mode that sends nothing at all.**
+
+# lazaretto-guard
 
 A Claude Code plugin. When the agent is about to run an install, the hook reads the command, pulls out the exactly pinned package versions, and asks the Lazaretto API whether any of them match a published malicious-package advisory. On a match it returns `ask`, with the advisory ids, and you decide. On anything else it says nothing.
 
