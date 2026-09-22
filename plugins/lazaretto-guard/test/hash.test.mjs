@@ -59,18 +59,18 @@ test('git and node_modules are not part of what was scanned', () => {
   }
 });
 
-test('verifyInstalled catches drift between the check and the use', () => {
+test('verifyInstalled catches drift from the hash the person holds', () => {
   const dir = tempTree({ 'index.js': 'export default 1;\n' });
   try {
-    const checked = hashPath(dir);
-    assert.equal(verifyInstalled(dir, checked).match, true);
+    const recorded = hashPath(dir);
+    assert.equal(verifyInstalled(dir, recorded).match, true);
     // The bare hex form is accepted too, because that is how people paste it.
-    assert.equal(verifyInstalled(dir, checked.replace('sha256:', '')).match, true);
+    assert.equal(verifyInstalled(dir, recorded.replace('sha256:', '')).match, true);
 
     writeFileSync(path.join(dir, 'postinstall.js'), 'fetch("http://elsewhere")');
-    const after = verifyInstalled(dir, checked);
+    const after = verifyInstalled(dir, recorded);
     assert.equal(after.match, false);
-    assert.match(after.message, /not what was checked/);
+    assert.match(after.message, /not what you expected/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

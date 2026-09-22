@@ -46,6 +46,27 @@ export function readAnswer(body, specs) {
   return readTextAnswer(body, specs);
 }
 
+/**
+ * Does this line name exactly `ref`, rather than a longer ref that begins the
+ * same way?
+ *
+ * A plain prefix test is wrong: `chalk@5.6.1` prefixes the line for
+ * `chalk@5.6.10`, so a clean package would be reported as an advisory hit, and
+ * the leftover `0` would be read as part of an advisory id.
+ *
+ * Whitespace alone is not enough of a boundary either, because the route pads
+ * to at most 46 columns and the ids run straight into a longer ref with no gap.
+ * So a boundary is: end of line, whitespace, or the start of an advisory id,
+ * which is an uppercase letter (GHSA, MAL, CVE, OSV). A version cannot continue
+ * with a bare uppercase letter: semver puts a `-` or a `+` first, and both of
+ * those read here as a different ref, which is silence rather than a wrong hit.
+ */
+function namesRef(line, ref) {
+  if (!line.startsWith(ref)) return false;
+  const next = line.charAt(ref.length);
+  return next === '' || /\s/.test(next) || /[A-Z]/.test(next);
+}
+
 /** The text rendering of the same answer. */
 export function readTextAnswer(text, specs) {
   const lines = text.split('\n');
@@ -59,7 +80,7 @@ export function readTextAnswer(text, specs) {
   const hits = [];
   for (const spec of specs) {
     const ref = `${spec.name}@${spec.version}`;
-    const line = block.find((l) => l.startsWith(ref));
+    const line = block.find((l) => namesRef(l, ref));
     if (line === undefined) continue;
     const rest = line.slice(ref.length).trim();
     hits.push({

@@ -47,7 +47,7 @@ const PREFIXES = new Set(['sudo', 'env', 'command', 'time', 'nice', 'exec', 'doa
 /**
  * Flags that swallow the next token, for install subcommands. Listed so a
  * value like `--workspace foo` is never mistaken for a package spec. Flags not
- * on this list are skipped on their own, which is the safe default because a
+ * on this list are skipped on their own, which is the quieter default because a
  * spec must still pass the pinned-version test to be returned.
  */
 const INSTALL_VALUE_FLAGS = new Set([

@@ -23,8 +23,12 @@ const HOOK_TIMEOUT_MS = 2000;
 /**
  * Run the hook the way Claude Code does.
  * `closeStdin: false` leaves the pipe open, which is the pathological case.
+ *
+ * `killAfterMs` is the test's own backstop. A hook that never exits would
+ * otherwise hang the run rather than fail it, so a stuck process is killed and
+ * reported as `killed: true` for the timing assertions to fail on.
  */
-function runHook({ input, env = {}, closeStdin = true }) {
+function runHook({ input, env = {}, closeStdin = true, killAfterMs = 6000 }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const child = spawn(process.execPath, [HOOK], {
@@ -33,6 +37,11 @@ function runHook({ input, env = {}, closeStdin = true }) {
     });
     let stdout = '';
     let stderr = '';
+    let killed = false;
+    const killer = setTimeout(() => {
+      killed = true;
+      child.kill('SIGKILL');
+    }, killAfterMs);
     child.stdout.on('data', (c) => {
       stdout += c;
     });
@@ -40,7 +49,8 @@ function runHook({ input, env = {}, closeStdin = true }) {
       stderr += c;
     });
     child.on('close', (code, signal) => {
-      resolve({ code, signal, stdout, stderr, ms: Date.now() - started });
+      clearTimeout(killer);
+      resolve({ code, signal, stdout, stderr, killed, ms: Date.now() - started });
     });
     child.stdin.on('error', () => {});
     child.stdin.write(typeof input === 'string' ? input : JSON.stringify(input));
@@ -191,6 +201,24 @@ test('stdin that never closes is abandoned by the watchdog', async () => {
   assert.equal(r.code, 0);
   assert.equal(r.stdout, '');
   assert.ok(r.ms < HOOK_TIMEOUT_MS, `hook took ${r.ms}ms with stdin held open`);
+});
+
+test('stdin bigger than the cap, with the pipe still open, exits at once', async () => {
+  // Over the cap the hook gives up on the input and has nothing left to do.
+  // If it resolves while stdin is still flowing, that open handle holds the
+  // process until the writer closes the pipe, which here it never does: the
+  // watchdog has already been cleared, so nothing else would end it either.
+  const huge = `{"tool_name":"Bash","tool_input":{"command":"npm i chalk@5.6.1 ${'x'.repeat(1_200_000)}`;
+  const r = await runHook({
+    input: huge,
+    env: { LAZARETTO_GUARD_API: 'http://127.0.0.1:1' },
+    closeStdin: false,
+    killAfterMs: 4000,
+  });
+  assert.equal(r.killed, false, 'the hook never exited on its own');
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, '');
+  assert.ok(r.ms < 1000, `hook took ${r.ms}ms on an over-cap stdin that never closes`);
 });
 
 test('offline mode never opens a socket', async () => {

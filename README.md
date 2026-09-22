@@ -10,9 +10,11 @@ It never blocks. The hook only ever returns `ask`, never `deny`, and it never ex
 
 It never mentions paying. There is no upsell on this path, in the prompt or anywhere else. Blocking and then selling would read as pay to unblock.
 
-It never stalls an install. `hooks.json` declares a 2 second timeout. Inside that the hook aborts the network call at 1.45 seconds and has its own 1.6 second watchdog, both counted from the moment the process started so node's own startup comes out of our budget rather than out of the window Claude Code is holding. The tests hold a socket open forever and assert the process still gets out on its own, with margin.
+It never stalls an install. `hooks.json` declares a 2 second timeout. Inside that the hook aborts the network call at 1.45 seconds and has its own 1.6 second watchdog, both counted from the moment the process started so node's own startup comes out of our budget rather than out of the window Claude Code is holding. The tests hold a socket open forever, and separately push more than the input cap through a pipe that never closes, and assert the process still gets out on its own, with margin.
 
-The cost of that window is real and worth stating: an answer slower than about 1.4 seconds is dropped, silently, because the alternative is a stalled install. Measured against the live API on 2026-09-22, a warm answer took about 1.0 second and a cold one about 2.6 seconds, so a cold answer is dropped today. A dropped answer is a missed warning, not a broken install, and it is indistinguishable from a clean one, which is the honest reason not to read silence as an all clear.
+The cost of that window is real and worth stating: an answer slower than about 1.45 seconds is dropped, silently, because the alternative is a stalled install. The sample behind that is small, so here it is in full. Five consecutive calls to the live API from one machine on 2026-09-22, one package each, took 1047, 2617, 2580, 988 and 981 milliseconds. Two of those five were over the budget and would have been dropped. A dropped answer is a missed warning rather than a broken install, and it looks exactly like a clean one, which is the honest reason not to read silence as an all clear.
+
+Those numbers are dated 2026-09-22 and were measured before the latency work now under way on the API side. If that work has landed by the time you read this, re-measure rather than trusting the figures above.
 
 It says nothing about packages that did not match. An empty answer is an empty answer, not a clean bill of health. A package can be hostile before anyone has reported it.
 
@@ -26,7 +28,7 @@ It says nothing about packages that did not match. An empty answer is an empty a
 - An MCP server written into `.mcp.json` or `.cursor/mcp.json` has one too. The hook reads the `command` and `args` of each server entry.
 - `npx`, `pnpm dlx`, `bunx` fetch and run a package without installing it, which is how a lot of agent tooling arrives.
 
-**The second part** is `/lazaretto-verify`, which re-hashes what actually landed on disk and compares it to the hash that was checked. A pre-install check answers a question about an identity. It cannot answer a question about bytes that are not on the machine yet. This closes that gap after the fact, and it works with the network switched off.
+**The second part** is `/lazaretto-verify`, which re-hashes what actually landed on disk and compares it to a hash you already hold. Be clear about where that hash comes from, because it is not one the guard produced: the guard never hashes anything before an install, so there is nothing of its own to compare against. The expected hash is one you recorded yourself with `lazaretto-guard hash <path>` at a point you were willing to trust, or one the publisher gave you. A pre-install check answers a question about an identity, this name at this version, and it cannot answer a question about bytes that are not on the machine yet. Comparing the bytes to a hash you hold catches drift between then and now. It works with the network switched off.
 
 ## What it can and cannot read
 

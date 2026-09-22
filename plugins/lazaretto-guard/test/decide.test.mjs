@@ -230,6 +230,36 @@ test('a long package name whose columns collide is still read correctly', () => 
   ]);
 });
 
+test('a shorter version does not match the line for a longer one', () => {
+  // chalk@5.6.1 is a prefix of chalk@5.6.10. A prefix test reports the clean
+  // package as a hit and reads the leftover digit as an advisory id.
+  const text = hitText(1, [{ ref: 'chalk@5.6.10', ids: ['MAL-2026-7'] }]);
+  assert.deepEqual(readAnswer(text, [{ name: 'chalk', version: '5.6.1' }]), []);
+  // The other direction: the ref that is actually on the line still matches.
+  assert.deepEqual(readAnswer(text, [{ name: 'chalk', version: '5.6.10' }]), [
+    { name: 'chalk', version: '5.6.10', ids: ['MAL-2026-7'] },
+  ]);
+  // And a prerelease of a version that is listed is a different package.
+  const pre = hitText(1, [{ ref: 'chalk@5.6.1-rc.1', ids: ['MAL-2026-8'] }]);
+  assert.deepEqual(readAnswer(pre, [{ name: 'chalk', version: '5.6.1' }]), []);
+  assert.deepEqual(readAnswer(pre, [{ name: 'chalk', version: '5.6.1-rc.1' }]), [
+    { name: 'chalk', version: '5.6.1-rc.1', ids: ['MAL-2026-8'] },
+  ]);
+});
+
+test('a hit stays a hit when both versions are listed together', () => {
+  const text = hitText(2, [
+    { ref: 'chalk@5.6.1', ids: ['MAL-2026-1'] },
+    { ref: 'chalk@5.6.10', ids: ['MAL-2026-2'] },
+  ]);
+  assert.deepEqual(readAnswer(text, [{ name: 'chalk', version: '5.6.1' }]), [
+    { name: 'chalk', version: '5.6.1', ids: ['MAL-2026-1'] },
+  ]);
+  assert.deepEqual(readAnswer(text, [{ name: 'chalk', version: '5.6.10' }]), [
+    { name: 'chalk', version: '5.6.10', ids: ['MAL-2026-2'] },
+  ]);
+});
+
 test('buildReason counts what it checked and what matched', () => {
   const reason = buildReason(
     [{ name: 'a', version: '1.0.0', ids: ['MAL-1'] }],

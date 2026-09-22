@@ -38,7 +38,9 @@ Then, in Claude Code, with the absolute path to the checkout:
 
 ## Check that it works, without installing anything malicious
 
-Ask the agent to run an install of a version that is in the advisory feed, for example a version the Lazaretto incident pages name at https://lazaretto.dev/caught. You should get a permission prompt carrying the advisory ids rather than a silent install. A clean install should produce no prompt at all and no visible delay.
+Ask the agent to run an install of a version that is in the advisory feed, for example a version the Lazaretto incident pages name at https://lazaretto.dev/caught. You should get a permission prompt carrying the advisory ids rather than a silent install.
+
+A clean install produces no prompt. It is not free, though: the hook adds up to about 1.5 seconds before the command runs, which is the API call plus node's own startup, and on a slow answer it spends the whole window and then says nothing. A warm answer is nearer one second. If that cost is not worth it to you, `LAZARETTO_GUARD_MODE=offline` removes it.
 
 You can also run the same check by hand, with no agent involved:
 

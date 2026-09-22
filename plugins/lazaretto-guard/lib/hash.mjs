@@ -5,8 +5,10 @@
  * A pre-install check answers a question about an identity: this name at this
  * version. It cannot answer a question about the bytes, because the bytes are
  * not here yet. After the install, they are. Re-hashing what actually landed
- * and comparing it to the hash that was checked is what catches drift between
- * the check and the use.
+ * and comparing it to a hash the person already holds is what catches drift
+ * between what they expected and what is there. Nothing in this plugin hashes
+ * a package before it is installed, so the expected hash always comes from
+ * them: an earlier `hash` run, or the publisher.
  *
  * The algorithm is reproduced exactly from the Lazaretto API so the two agree:
  * an order-independent sha256 over sorted per-file hashes (see the API's
@@ -61,7 +63,7 @@ export function hashPath(target) {
   return canonicalArtifactHash(readTree(target));
 }
 
-/** Does what landed on disk match the hash that was checked? */
+/** Does what landed on disk match the hash the person expected? */
 export function verifyInstalled(target, expectedTargetHash) {
   const actual = hashPath(target);
   const expected = expectedTargetHash.startsWith('sha256:') ? expectedTargetHash : `sha256:${expectedTargetHash}`;
@@ -71,7 +73,7 @@ export function verifyInstalled(target, expectedTargetHash) {
     expected,
     message:
       actual === expected
-        ? 'Match: what is on disk is what was checked.'
-        : 'Mismatch: what is on disk is not what was checked. Treat it as unchecked.',
+        ? 'Match: what is on disk is what you expected. That is a statement about the bytes, not a review of them.'
+        : 'Mismatch: what is on disk is not what you expected. Treat it as unverified.',
   };
 }

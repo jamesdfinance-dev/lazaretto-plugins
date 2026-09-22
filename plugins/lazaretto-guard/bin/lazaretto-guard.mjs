@@ -7,6 +7,8 @@
  *
  *   lazaretto-guard verify <path> <expected-hash>
  *       Compare what is on disk to a hash you already have. No network.
+ *       The expected hash comes from you: nothing here hashes a package
+ *       before it is installed, so there is no hash of ours to compare to.
  *       Exit 1 on a mismatch.
  *
  *   lazaretto-guard lookup <path>
@@ -60,7 +62,7 @@ async function main(argv) {
       return 64;
     }
     const result = verifyInstalled(args[0], args[1]);
-    out(`${result.message}\n  on disk: ${result.actual}\n  checked: ${result.expected}`);
+    out(`${result.message}\n  on disk:  ${result.actual}\n  expected: ${result.expected}`);
     return result.match ? 0 : 1;
   }
 

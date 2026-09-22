@@ -25,21 +25,45 @@ const MAX_STDIN_BYTES = 1_000_000;
 const VERSION = '0.1.0';
 const CLIENT_TAG = `lazaretto-guard/${VERSION}`;
 
-/** Read stdin to the end, capped. Resolves to '' on any trouble. */
+/**
+ * Read stdin to the end, capped. Resolves to '' on any trouble.
+ *
+ * Whichever way it ends, it lets go of stdin first. Resolving while the stream
+ * is still flowing leaves an open handle that holds the process up long after
+ * it has decided to say nothing: on an over-cap read, with the writer still
+ * holding the pipe open, that is the whole hook timeout spent doing nothing.
+ */
 function readStdin() {
   return new Promise((resolve) => {
     let size = 0;
+    let settled = false;
     const chunks = [];
-    process.stdin.on('data', (chunk) => {
+
+    const onData = (chunk) => {
       size += chunk.length;
       if (size > MAX_STDIN_BYTES) {
-        resolve('');
+        finish('');
         return;
       }
       chunks.push(chunk);
-    });
-    process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    process.stdin.on('error', () => resolve(''));
+    };
+    const onEnd = () => finish(Buffer.concat(chunks).toString('utf8'));
+    const onError = () => finish('');
+
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      process.stdin.off('data', onData);
+      process.stdin.off('end', onEnd);
+      process.stdin.off('error', onError);
+      process.stdin.pause();
+      process.stdin.destroy();
+      resolve(value);
+    }
+
+    process.stdin.on('data', onData);
+    process.stdin.on('end', onEnd);
+    process.stdin.on('error', onError);
   });
 }
 
