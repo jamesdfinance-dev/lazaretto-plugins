@@ -22,9 +22,7 @@ import { hashPath, verifyInstalled } from '../lib/hash.mjs';
 import { parseSpec } from '../lib/parse.mjs';
 import { checkSpecs } from '../lib/api.mjs';
 import { settingsFromEnv } from '../lib/decide.mjs';
-
-const VERSION = '0.1.0';
-const CLIENT_TAG = `lazaretto-guard/${VERSION}`;
+import { CLIENT_TAG, VERSION } from '../lib/version.mjs';
 
 const USAGE = `lazaretto-guard ${VERSION}
 

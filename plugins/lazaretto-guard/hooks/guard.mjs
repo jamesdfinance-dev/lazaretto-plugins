@@ -18,12 +18,10 @@
  * timeout so Claude Code kills it even if both of those are wrong.
  */
 import { decide, settingsFromEnv } from '../lib/decide.mjs';
+import { CLIENT_TAG } from '../lib/version.mjs';
 
 /** Longest hook input we will read. Bigger than any real Bash command. */
 const MAX_STDIN_BYTES = 1_000_000;
-
-const VERSION = '0.1.0';
-const CLIENT_TAG = `lazaretto-guard/${VERSION}`;
 
 /**
  * Read stdin to the end, capped. Resolves to '' on any trouble.
