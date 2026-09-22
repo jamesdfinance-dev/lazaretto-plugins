@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lazaretto-plugins",
+  "description": "Plugins from Lazaretto, a per-call supply-chain scanner for agents. Currently one: an install-path check against published malicious-package advisories.",
+  "owner": {
+    "name": "James Dykstra",
+    "email": "jamesdfinance@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "lazaretto-guard",
+      "description": "Before an install runs, check the pinned package versions in the command against published malicious-package advisories, and ask rather than block on a match. The same check runs on the package behind `claude mcp add`, `npx`, and an MCP server written into .mcp.json, where no advisory lookup happens today. Sends package names and versions and nothing else.",
+      "version": "0.1.0",
+      "author": {
+        "name": "James Dykstra",
+        "email": "jamesdfinance@gmail.com"
+      },
+      "category": "security",
+      "source": "./plugins/lazaretto-guard",
+      "homepage": "https://lazaretto.dev"
+    }
+  ]
+}

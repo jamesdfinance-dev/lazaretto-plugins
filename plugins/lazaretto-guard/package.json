@@ -1,0 +1,14 @@
+{
+  "name": "lazaretto-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code install-path check against published malicious-package advisories. Node built-ins only, no dependencies.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

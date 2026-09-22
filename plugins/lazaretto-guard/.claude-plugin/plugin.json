@@ -1,0 +1,20 @@
+{
+  "name": "lazaretto-guard",
+  "version": "0.1.0",
+  "description": "Before an install runs, check the pinned package versions in the command against published malicious-package advisories, and ask rather than block on a match. The same check runs on the package behind `claude mcp add`, `npx`, and an MCP server written into .mcp.json, where no advisory lookup happens today. Sends package names and versions and nothing else. Never blocks, never exits non-zero, 2 second hook timeout.",
+  "author": {
+    "name": "James Dykstra",
+    "email": "jamesdfinance@gmail.com"
+  },
+  "homepage": "https://lazaretto.dev",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "supply-chain",
+    "npm",
+    "mcp",
+    "install",
+    "hooks",
+    "advisories"
+  ]
+}
