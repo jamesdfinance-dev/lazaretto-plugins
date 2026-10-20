@@ -90,3 +90,7 @@ cd plugins/lazaretto-guard && node --test test/*.test.mjs
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+## Also in this repository
+
+- [`clawscan/`](clawscan/): Lazaretto as a command scanner for [ClawScan](https://github.com/openclaw/clawscan) custom profiles, for agent skills.

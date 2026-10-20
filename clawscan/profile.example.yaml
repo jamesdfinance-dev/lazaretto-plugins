@@ -1,0 +1,34 @@
+# Lazaretto as a user-defined command scanner in a ClawScan custom profile.
+# Follows docs/scanners.md, "Profile scanner configuration".
+#
+# The key is declared under secretEnv so it never appears in a flag, a fixture
+# or a scan artifact. A free key: curl -s -X POST https://lazaretto.dev/v1/trial
+version: 1
+
+profiles:
+  review:
+    scanners:
+      - id: lazaretto
+        # Path to lazaretto-scanner.mjs from a checkout of this repository.
+        command: node clawscan/lazaretto-scanner.mjs {{target}}
+        secretEnv:
+          - LAZARETTO_API_KEY
+        targets:
+          - skill
+        gate:
+          rules:
+            - id: lazaretto-malicious
+              path: verdict
+              equals: malicious
+              action: block
+            - id: lazaretto-flagged
+              path: verdict
+              equals: flagged
+              action: warn
+            # A local scan reads SKILL.md only and lists the rest here, so a
+            # clean verdict on a skill with bundled scripts is not a whole-skill
+            # all clear.
+            - id: lazaretto-partial
+              path: not_scanned[]
+              exists: true
+              action: warn
