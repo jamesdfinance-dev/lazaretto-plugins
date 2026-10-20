@@ -51,14 +51,15 @@ Set `LAZARETTO_GUARD_MODE`:
 
 | Mode | What leaves the machine |
 | --- | --- |
-| `full` (default) | Package names and exact versions, on install commands only. |
+| `full` (default) | Package names and exact versions, on install commands. When a remote MCP server is being connected, that server's URL and the free key. |
+| `advisories` | Package names and exact versions, on install commands only. No server URL is sent and no key is requested. |
 | `hash` | Nothing from the hook. `lazaretto-guard lookup <path>` sends only a sha256 of content already on your disk: no name, no version, no path. |
 | `offline` | Nothing, ever. `hash` and `verify` still work, entirely locally. |
 | `off` | The hook does nothing. Same as `LAZARETTO_GUARD_DISABLE=1`. |
 
-The request also reveals your IP address to the server, the same as any HTTPS request. If that matters for your work, use `offline`.
+Each request also reveals your IP address to the server, the same as any HTTPS request. If that matters for your work, use `offline`.
 
-Other settings: `LAZARETTO_GUARD_API` (a different origin), `LAZARETTO_GUARD_API_PATH`, `LAZARETTO_GUARD_TIMEOUT_MS`, `LAZARETTO_GUARD_BUDGET_MS`.
+Other settings: `LAZARETTO_GUARD_API` (a different origin, for both checks), `LAZARETTO_GUARD_API_PATH`, `LAZARETTO_GUARD_TIMEOUT_MS`, `LAZARETTO_GUARD_BUDGET_MS`, `LAZARETTO_GUARD_MCP_TIMEOUT_MS`, `LAZARETTO_GUARD_MCP_BUDGET_MS`, `LAZARETTO_API_KEY` (your own key for the server read, in place of the free one), `XDG_CONFIG_HOME` (moves the key file to `$XDG_CONFIG_HOME/lazaretto/key`).
 
 ## Install
 
@@ -66,7 +67,9 @@ See [INSTALL.md](INSTALL.md).
 
 ## Cost
 
-The check is free, keyless and anonymous. The API rate limits it per IP, and a rate limit is answered with silence like any other non answer.
+The package check is free, keyless and anonymous. The API rate limits it per IP, and a rate limit is answered with silence like any other non answer.
+
+The server read is free too, but it needs a key. The first time a remote server is connected, the plugin asks the API for a free key and saves it to `~/.config/lazaretto/key`, readable only by you. The API issues one free key per IP address per day. The key carries a few reads a day, refilled daily; when they run out, or when no key could be issued, the read is skipped silently and the package check carries on. If you set `LAZARETTO_API_KEY`, the read uses that key instead and spends its credits.
 
 ## Layout
 
@@ -78,7 +81,9 @@ plugins/lazaretto-guard/
   hooks/guard.mjs                 the hook process
   lib/tokenize.mjs                a small shell tokenizer that refuses what it cannot read
   lib/parse.mjs                   install command to pinned package identities
-  lib/api.mjs                     the one place that touches the network
+  lib/api.mjs                     the package advisory call
+  lib/mcp-scan.mjs                the remote server read, and the free key
+  lib/version.mjs                 the client string sent with every request
   lib/decide.mjs                  ask, or nothing
   lib/hash.mjs                    the on-disk re-hash, network free
   bin/lazaretto-guard.mjs         hash, verify, lookup, check, by hand
