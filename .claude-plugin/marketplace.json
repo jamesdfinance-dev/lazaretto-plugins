@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "lazaretto-plugins",
-  "description": "Plugins from Lazaretto, a per-call supply-chain scanner for agents. Currently one: an install-path check against published malicious-package advisories.",
+  "description": "Claude Code plugins from Lazaretto. lazaretto-guard reads a remote MCP server's tool descriptions for poisoning before it is connected, and checks pinned package installs against published malware advisories. It only ever asks, never blocks.",
   "owner": {
     "name": "James Dykstra",
     "email": "jamesdfinance@gmail.com"
