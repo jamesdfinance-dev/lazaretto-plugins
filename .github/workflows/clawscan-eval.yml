@@ -1,0 +1,61 @@
+name: ClawScan evaluation
+
+# Runs the Lazaretto command scanner through real ClawScan, in its default
+# Docker sandbox, for the cases a reviewer asked for: a flagged skill, a clean
+# skill with a file left unscanned, and an unreachable, rate-limited and
+# out-of-credits service. Each artifact is kept, and the job fails if any case
+# passes the gate when it should not, or if the key appears in an artifact.
+
+on:
+  push:
+    paths:
+      - 'clawscan/**'
+      - '.github/workflows/clawscan-eval.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+
+      - name: Install ClawScan
+        run: |
+          npm install --global --no-audit --no-fund @openclaw/clawscan@0.2.0
+          clawscan --version
+          docker pull ghcr.io/openclaw/clawscan-runtime:latest
+          docker image inspect ghcr.io/openclaw/clawscan-runtime:latest --format '{{index .RepoDigests 0}}'
+
+      - name: Get a free key
+        run: |
+          key="$(curl -fsS -X POST https://lazaretto.dev/v1/trial | python3 -c 'import sys,json;print(json.load(sys.stdin)["api_key"])')"
+          echo "::add-mask::$key"
+          echo "LAZARETTO_API_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Evaluate in the Docker sandbox
+        run: sh clawscan/eval/run-eval.sh docker "$RUNNER_TEMP/clawscan-eval"
+
+      - name: Summary
+        if: always()
+        run: cat "$RUNNER_TEMP/clawscan-eval/summary.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Keep the artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: clawscan-artifacts
+          path: |
+            ${{ runner.temp }}/clawscan-eval/*.json
+            ${{ runner.temp }}/clawscan-eval/*.stderr
+            ${{ runner.temp }}/clawscan-eval/summary.md
+            ${{ runner.temp }}/clawscan-eval/clawscan.yml

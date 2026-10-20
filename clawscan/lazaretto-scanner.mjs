@@ -38,8 +38,18 @@ function emit(obj, code) {
   process.exit(code);
 }
 
-function fail(reason, extra = {}) {
-  emit({ scanner: 'lazaretto', status: 'error', reason, not_an_all_clear: true, ...extra }, 1);
+/**
+ * No scan result exists. Exit 1 is deliberate: ClawScan treats exit codes 0 to
+ * 124 with valid JSON as a completed scanner, so its gate rules can fire on
+ * this output. (A reserved exit of 125 or more would mark the scanner failed,
+ * and failed scanners fire no gate rules, which would leave the gate at pass.)
+ * The profile gates on `status: error`, so an outage is never a passing scan.
+ *
+ * `error_kind` says which: unavailable (unreachable, timed out, 5xx, or a scan
+ * that errored), rate_limited, no_credits, or config (no key, bad target).
+ */
+function fail(errorKind, reason, extra = {}) {
+  emit({ scanner: 'lazaretto', status: 'error', error_kind: errorKind, reason, not_an_all_clear: true, ...extra }, 1);
 }
 
 function listFiles(dir) {
@@ -59,7 +69,7 @@ function listFiles(dir) {
 function buildRequest(target) {
   if (existsSync(target) && statSync(target).isDirectory()) {
     const skillPath = join(target, 'SKILL.md');
-    if (!existsSync(skillPath)) fail('no SKILL.md in the target directory', { target });
+    if (!existsSync(skillPath)) fail('config', 'no SKILL.md in the target directory', { target });
     const content = readFileSync(skillPath, 'utf8');
     const others = listFiles(target).filter((f) => f !== 'SKILL.md');
     return {
@@ -73,14 +83,14 @@ function buildRequest(target) {
   if (CLAWHUB_REF.test(target)) {
     return { body: { target: { type: 'clawhub_skill', ref: target }, depth: 'full' }, scanned: 'whole package', notScanned: [], mode: 'clawhub' };
   }
-  fail('target is neither a local skill directory nor a ClawHub owner/name reference', { target });
+  fail('config', 'target is neither a local skill directory nor a ClawHub owner/name reference', { target });
 }
 
 async function main() {
   const target = process.argv[2];
-  if (!target) fail('usage: lazaretto-scanner.mjs <skill-dir | owner/name[@version]>');
+  if (!target) fail('config', 'usage: lazaretto-scanner.mjs <skill-dir | owner/name[@version]>');
   const key = process.env.LAZARETTO_API_KEY?.trim();
-  if (!key) fail('LAZARETTO_API_KEY is not set. A free key: curl -s -X POST https://lazaretto.dev/v1/trial');
+  if (!key) fail('config', 'LAZARETTO_API_KEY is not set. A free key: curl -s -X POST https://lazaretto.dev/v1/trial');
 
   const req = buildRequest(target);
   let res;
@@ -92,21 +102,21 @@ async function main() {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (e) {
-    fail('scan service unreachable or timed out', { detail: String(e?.message ?? e) });
+    fail('unavailable', 'scan service unreachable or timed out', { detail: String(e?.message ?? e) });
   }
 
   let report;
   try {
     report = await res.json();
   } catch {
-    fail(`scan service answered HTTP ${res.status} with a body that is not JSON`);
+    fail('unavailable', `scan service answered HTTP ${res.status} with a body that is not JSON`);
   }
   if (res.status === 402 || res.status === 429) {
     // Out of credits or rate limited: a scan that did not happen, stated as such.
-    fail(res.status === 402 ? 'no scan credits left on this key' : 'rate limited', { http_status: res.status, retry_after_seconds: report?.retry_after_seconds ?? null });
+    fail(res.status === 402 ? 'no_credits' : 'rate_limited', res.status === 402 ? 'no scan credits left on this key' : 'rate limited', { http_status: res.status, retry_after_seconds: report?.retry_after_seconds ?? null });
   }
-  if (!res.ok) fail(`scan service answered HTTP ${res.status}`, { error: report?.error ?? null, detail: report?.detail ?? null });
-  if (report?.verdict === 'error') fail('the scan itself errored; nothing was billed', { detail: report?.detail ?? null });
+  if (!res.ok) fail('unavailable', `scan service answered HTTP ${res.status}`, { error: report?.error ?? null, detail: report?.detail ?? null });
+  if (report?.verdict === 'error') fail('unavailable', 'the scan itself errored; nothing was billed', { detail: report?.detail ?? null });
 
   emit(
     {

@@ -9,8 +9,9 @@ profiles:
   review:
     scanners:
       - id: lazaretto
-        # Path to lazaretto-scanner.mjs from a checkout of this repository.
-        command: node clawscan/lazaretto-scanner.mjs {{target}}
+        # Absolute path to this file. Under the Docker sandbox (ClawScan's default),
+        # mount its directory read-only: --sandbox-mount /abs/path/to/clawscan
+        command: node /abs/path/to/clawscan/lazaretto-scanner.mjs {{target}}
         secretEnv:
           - LAZARETTO_API_KEY
         targets:
@@ -31,4 +32,13 @@ profiles:
             - id: lazaretto-partial
               path: not_scanned[]
               exists: true
+              action: warn
+            # No scan result: the service was unreachable, rate limited, out of
+            # credits, or misconfigured (error_kind says which). The scanner
+            # exits 1 with valid JSON, which ClawScan records as completed, so
+            # this rule fires and an outage is never a passing scan. Change the
+            # action to block to fail closed.
+            - id: lazaretto-unavailable
+              path: status
+              equals: error
               action: warn
