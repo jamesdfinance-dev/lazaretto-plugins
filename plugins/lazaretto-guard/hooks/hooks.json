@@ -1,5 +1,5 @@
 {
-  "description": "Before an install runs, check the pinned package versions in the command against published malicious-package advisories, and ask rather than block on a match. The same check runs on the package behind `claude mcp add`, `npx`, and an MCP server written into .mcp.json.",
+  "description": "Before an install runs, check pinned package versions against published malicious-package advisories, and read the tools a remote MCP server advertises before it is connected. Ask rather than block on anything found.",
   "hooks": {
     "PreToolUse": [
       {
@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs\"",
-            "timeout": 2
+            "timeout": 8
           }
         ]
       },
@@ -18,7 +18,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs\"",
-            "timeout": 2
+            "timeout": 8
           }
         ]
       }

@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "lazaretto-guard",
-      "description": "Before an install runs, check the pinned package versions in the command against published malicious-package advisories, and ask rather than block on a match. The same check runs on the package behind `claude mcp add`, `npx`, and an MCP server written into .mcp.json, where no advisory lookup happens today. Sends package names and versions and nothing else.",
-      "version": "0.1.0",
+      "description": "Before an agent connects a remote MCP server, read the tools it advertises for tool poisoning and hidden orders; before an install, check pinned package versions against published malicious-package advisories. Ask rather than block on anything found. Sends package names and versions, and a remote server's URL with a free key; never a URL that carries a secret. Never blocks, never exits non-zero.",
+      "version": "0.2.0",
       "author": {
         "name": "James Dykstra",
         "email": "jamesdfinance@gmail.com"

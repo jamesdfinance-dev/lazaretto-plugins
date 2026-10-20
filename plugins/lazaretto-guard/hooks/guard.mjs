@@ -14,10 +14,16 @@
  *
  * It also cannot hang the install it is sitting in front of. Three separate
  * limits enforce that: the fetch has its own abort timeout, this process has a
- * hard watchdog that exits 0 on its own, and hooks.json declares a 2 second
- * timeout so Claude Code kills it even if both of those are wrong.
+ * hard watchdog that exits 0 on its own, and hooks.json declares a timeout so
+ * Claude Code kills it even if both of those are wrong.
+ *
+ * Two windows. A package install gets 1.6 seconds, counted from process start.
+ * Only a command that connects a remote MCP server gets the longer one (7
+ * seconds), because reading a server's tools means our scanner connects to it;
+ * people add a server rarely and on purpose. The hooks.json timeout (8) sits
+ * above the longer window, so an install never waits on it.
  */
-import { decide, settingsFromEnv } from '../lib/decide.mjs';
+import { decide, settingsFromEnv, needsLongBudget } from '../lib/decide.mjs';
 import { CLIENT_TAG } from '../lib/version.mjs';
 
 /** Longest hook input we will read. Bigger than any real Bash command. */
@@ -77,7 +83,7 @@ async function main() {
   // own startup comes out of our budget and not out of the timeout Claude Code
   // is holding. If anything takes too long, including stdin never closing,
   // leave quietly rather than making the person wait.
-  const watchdog = setTimeout(
+  let watchdog = setTimeout(
     () => {
       process.exit(0);
     },
@@ -99,7 +105,15 @@ async function main() {
         // room to write the answer out.
         const left = settings.budgetMs - sinceStart() - 120;
         const timeoutMs = Math.max(100, Math.min(settings.timeoutMs, left));
-        payload = await decide(input, { settings: { ...settings, timeoutMs }, clientTag: CLIENT_TAG });
+        let mcpTimeoutMs = 0;
+        if (needsLongBudget(input, settings)) {
+          // Only now, knowing this call connects a remote server, take the
+          // longer window: re-arm the watchdog for it.
+          clearTimeout(watchdog);
+          watchdog = setTimeout(() => process.exit(0), Math.max(100, settings.mcpBudgetMs - sinceStart()));
+          mcpTimeoutMs = Math.max(100, Math.min(settings.mcpTimeoutMs, settings.mcpBudgetMs - sinceStart() - 120));
+        }
+        payload = await decide(input, { settings: { ...settings, timeoutMs, mcpTimeoutMs }, clientTag: CLIENT_TAG });
       }
     }
   } catch {

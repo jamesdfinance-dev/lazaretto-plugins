@@ -1,16 +1,23 @@
-**What leaves your machine: the names and exact versions of packages a command is about to install, sent over HTTPS to `https://lazaretto.dev/check`, plus a fixed client string `lazaretto-guard/<version>`. Nothing else. Not the command, not the file paths, not the working directory, not the project name, not an API key, because there is no key on this path. There is also a mode that sends nothing at all.**
+**What leaves your machine. On a package install: the names and exact versions of the packages, sent over HTTPS to `https://lazaretto.dev/check`. When a command or a config file connects a remote MCP server: that server's URL, so our scanner can ask the server for its tool list itself, plus a free API key the plugin requests once and keeps in `~/.config/lazaretto/key`, readable only by you. A server URL that carries a secret (a query string, a user:password, or an auth header on the command) is never sent. Every request carries a fixed client string `lazaretto-guard/<version>`. Nothing else: not the command, not file paths, not the working directory, not the project name. `LAZARETTO_GUARD_MODE=advisories` keeps only the package check, and `offline` sends nothing at all.**
 
 # lazaretto-guard
 
-A Claude Code plugin. When the agent is about to run an install, the hook reads the command, pulls out the exactly pinned package versions, and asks the Lazaretto API whether any of them match a published malicious-package advisory. On a match it returns `ask`, with the advisory ids, and you decide. On anything else it says nothing.
+A Claude Code plugin with two checks, both before anything is installed or connected:
+
+1. **Remote MCP servers.** When the agent runs `claude mcp add <name> <url>`, or writes a remote server into `.mcp.json`, the hook has Lazaretto's scanner connect to that server, list its tools, and read the text it hands an agent: tool names, descriptions, parameter schemas and server instructions. It looks for tool poisoning (hidden orders pointing the agent at private keys or config files), parameters built to carry secrets or your conversation out, standing orders about another server's tools, and invisible characters. If something is there, you are asked first, with the rule and where it was found. This is the part nobody else does at install time.
+2. **Packages.** For an install with exactly pinned versions, it asks whether any of them match a published malicious-package advisory. On a match, you are asked, with the advisory ids.
+
+On anything else it says nothing.
 
 ## What it does not do
 
 It never blocks. The hook only ever returns `ask`, never `deny`, and it never exits non-zero. One wrong block inside an agent run is a permanent uninstall, and the decision belongs to you, not to a hook.
 
-It never mentions paying. There is no upsell on this path, in the prompt or anywhere else. Blocking and then selling would read as pay to unblock.
+It never mentions paying. There is no upsell on this path, in the prompt or anywhere else. Blocking and then selling would read as pay to unblock. The server read uses a free key (a few reads a day, refilled daily); when it runs out, the read is skipped silently and the package check carries on.
 
-It never stalls an install. `hooks.json` declares a 2 second timeout. Inside that the hook runs its own 1.6 second watchdog counted from the moment the process started, so node's own startup comes out of our budget rather than out of the window Claude Code is holding, and the network call gets whatever is left of that budget after startup and stdin, less 120 milliseconds to write the answer out, capped at 1.45 seconds. The tests hold a socket open forever, and separately push more than the input cap through a pipe that never closes, and assert the process still gets out on its own, with margin.
+It never puts the flagged text in front of you. When a server's tool text is flagged, the prompt names our rule, its description and where it was found, but never quotes the server's own words: those words are the injection attempt.
+
+It never stalls an install. A package install gets a 1.6 second window and a remote server add gets 7 seconds, because reading a server's tools means connecting to it and people add a server rarely and on purpose; `hooks.json` declares 8 seconds above both. For a package install, the hook runs its own 1.6 second watchdog counted from the moment the process started, so node's own startup comes out of our budget rather than out of the window Claude Code is holding, and the network call gets whatever is left of that budget after startup and stdin, less 120 milliseconds to write the answer out, capped at 1.45 seconds. The tests hold a socket open forever, and separately push more than the input cap through a pipe that never closes, and assert the process still gets out on its own, with margin.
 
 The cost of that window is real and worth stating: an answer slower than about 1.45 seconds is dropped, silently, because the alternative is a stalled install. The sample behind that is small, so here it is in full. Five consecutive calls to the live API from one machine on 2026-09-22, one package each, took 1047, 2617, 2580, 988 and 981 milliseconds. Two of those five were over the budget and would have been dropped. A dropped answer is a missed warning rather than a broken install, and it looks exactly like a clean one, which is the honest reason not to read silence as an all clear.
 
