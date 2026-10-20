@@ -31,5 +31,12 @@ function readVersion() {
 /** The version in the manifest, or '' if it could not be read. */
 export const VERSION = readVersion();
 
-/** What the API sees: `lazaretto-guard/<version>`. */
-export const CLIENT_TAG = VERSION === '' ? CLIENT_NAME : `${CLIENT_NAME}/${VERSION}`;
+/**
+ * A label our own scheduled self-test adds (LAZARETTO_GUARD_CLIENT_SUFFIX=ci),
+ * so the service can leave that traffic out of the usage it counts. Short and
+ * plain or it is ignored: it goes on the wire.
+ */
+const SUFFIX = /^[a-z0-9]{1,16}$/.test(process.env.LAZARETTO_GUARD_CLIENT_SUFFIX ?? '') ? `+${process.env.LAZARETTO_GUARD_CLIENT_SUFFIX}` : '';
+
+/** What the API sees: `lazaretto-guard/<version>`, plus a self-test label when set. */
+export const CLIENT_TAG = (VERSION === '' ? CLIENT_NAME : `${CLIENT_NAME}/${VERSION}`) + SUFFIX;
