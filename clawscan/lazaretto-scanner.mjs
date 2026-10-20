@@ -116,12 +116,17 @@ async function main() {
       target,
       verdict: report.verdict,
       risk: report.risk ?? null,
+      // A scan report finding is { rule_id, category, severity, description,
+      // evidence: { file, line, snippet } }. The snippet is a quote from the
+      // scanned artifact, sanitized and length-capped by the service.
       findings: (report.findings ?? []).map((f) => ({
-        rule_id: f.rule_id ?? f.id ?? null,
+        rule_id: f.rule_id ?? null,
+        category: f.category ?? null,
         severity: f.severity ?? null,
-        file: f.file ?? f.path ?? null,
-        line: f.line ?? null,
-        detail: f.detail ?? f.message ?? null,
+        description: f.description ?? null,
+        file: f.evidence?.file ?? null,
+        line: f.evidence?.line ?? null,
+        snippet: f.evidence?.snippet ?? null,
       })),
       scanned: req.scanned,
       // Files a local scan did not read. Non-empty means a clean verdict covers
