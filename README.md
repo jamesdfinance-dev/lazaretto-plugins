@@ -9,6 +9,11 @@ A Claude Code plugin with two checks, both before anything is installed or conne
 
 On anything else it says nothing.
 
+Not using Claude Code, or want to look before you install? The same server check runs in a browser at
+[lazaretto.dev/check/mcp](https://lazaretto.dev/check/mcp), and the
+[MCP registry index](https://lazaretto.dev/mcp-registry) shows the latest weekly read of every remote server in the
+official MCP registry. Server operators can take a README badge from their server's page there.
+
 ## What it does not do
 
 It never blocks. The hook only ever returns `ask`, never `deny`, and it never exits non-zero. One wrong block inside an agent run is a permanent uninstall, and the decision belongs to you, not to a hook.
