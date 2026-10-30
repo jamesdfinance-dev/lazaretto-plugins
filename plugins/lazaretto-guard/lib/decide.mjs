@@ -12,13 +12,24 @@
 import { parseCommand, parseMcpConfigText } from './parse.mjs';
 import { checkSpecs, DEFAULT_ORIGIN, DEFAULT_PATH } from './api.mjs';
 import {
-  remoteMcpUrlsFromCommand,
-  remoteMcpUrlsFromConfigText,
+  remoteMcpServersFromCommand,
+  remoteMcpServersFromConfigText,
   obtainKey,
   scanRemoteServer,
   isConcerning,
   describeServer,
 } from './mcp-scan.mjs';
+import {
+  hasPins,
+  loadPins,
+  savePins,
+  pinServer,
+  dueForRecheck,
+  recordRecheck,
+  acceptChange,
+  pendingForTool,
+  describeChange,
+} from './pins.mjs';
 
 /** Where a person goes to read the advisory behind an id, for themselves. */
 const ADVISORY_URL = 'https://osv.dev/vulnerability/';
@@ -44,6 +55,11 @@ export function settingsFromEnv(env = process.env) {
     // and it still sits inside the timeout hooks.json declares.
     mcpTimeoutMs: positiveInt(env.LAZARETTO_GUARD_MCP_TIMEOUT_MS, 5500),
     mcpBudgetMs: positiveInt(env.LAZARETTO_GUARD_MCP_BUDGET_MS, 7000),
+    // Re-reading pinned servers at session start, at most once a day. Claude's
+    // first reply waits for SessionStart hooks, so this window is shorter than
+    // the one for an add, and a server that misses it waits for the next day.
+    sessionTimeoutMs: positiveInt(env.LAZARETTO_GUARD_SESSION_TIMEOUT_MS, 4000),
+    sessionBudgetMs: positiveInt(env.LAZARETTO_GUARD_SESSION_BUDGET_MS, 5000),
     // `advisories` turns the MCP read off and keeps only the identity check,
     // for anyone who does not want a server URL to leave the machine.
     readServers: mode !== 'advisories',
@@ -83,26 +99,57 @@ export function targetsForToolInput(toolName, toolInput) {
 }
 
 /**
- * The remote MCP servers this tool call is about to connect: `claude mcp add`
- * with a URL, or a URL written into an MCP config file.
+ * The remote MCP servers this tool call is about to connect, as `{ url, name }`:
+ * `claude mcp add` with a URL, or a URL written into an MCP config file.
  */
-export function remoteServersForToolInput(toolName, toolInput) {
+export function serversForToolInput(toolName, toolInput) {
   if (!toolInput || typeof toolInput !== 'object') return [];
   if (toolName === 'Bash') {
-    return typeof toolInput.command === 'string' ? remoteMcpUrlsFromCommand(toolInput.command) : [];
+    return typeof toolInput.command === 'string' ? remoteMcpServersFromCommand(toolInput.command) : [];
   }
   if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
     const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
     if (!isMcpConfigPath(filePath)) return [];
-    return remoteMcpUrlsFromConfigText(addedText(toolInput));
+    return remoteMcpServersFromConfigText(addedText(toolInput));
   }
   return [];
+}
+
+/** The URLs alone. */
+export function remoteServersForToolInput(toolName, toolInput) {
+  return serversForToolInput(toolName, toolInput).map((s) => s.url);
 }
 
 /** True when this input needs the longer window: it connects a remote server. */
 export function needsLongBudget(hookInput, settings) {
   if (settings && (settings.disabled || settings.offline || !settings.readServers)) return false;
   return remoteServersForToolInput(hookInput?.tool_name, hookInput?.tool_input).length > 0;
+}
+
+/** True when this input is a session start that has pinned servers to re-read. */
+export function isPinRecheck(hookInput, settings) {
+  if (hookInput?.hook_event_name !== 'SessionStart') return false;
+  if (settings && (settings.disabled || settings.offline || !settings.readServers)) return false;
+  return hasPins(settings?.env ?? process.env);
+}
+
+/** The ask shown at the first use of a server whose tools changed since it was pinned. */
+export function buildChangeReason(changed) {
+  const lines = [];
+  lines.push(
+    changed.length === 1
+      ? 'Lazaretto: the tools this MCP server advertises changed since it was added.'
+      : `Lazaretto: the tools of ${changed.length} MCP servers changed since they were added.`,
+  );
+  lines.push('');
+  for (const [url, entry] of changed) lines.push(describeChange(url, entry));
+  lines.push('');
+  lines.push(
+    'A server can change what its tools tell an agent after it was approved. Only tool names are shown here, never the new text. ' +
+      'To read the tools yourself, run /mcp, or paste the URL at https://lazaretto.dev/check/mcp. ' +
+      'The new tools are now the pinned version, so Lazaretto will not ask about this change again.',
+  );
+  return lines.join('\n');
 }
 
 /** The text shown when a server's own tool text looks wrong. */
@@ -196,9 +243,13 @@ export async function decide(hookInput, options = {}) {
     const settings = options.settings ?? settingsFromEnv(options.env ?? process.env);
     if (settings.disabled) return null;
 
+    if (hookInput?.hook_event_name === 'SessionStart') return await recheckPins(settings, options);
+
     const toolName = hookInput?.tool_name;
+    if (typeof toolName === 'string' && toolName.startsWith('mcp__')) return askAboutChanges(toolName, settings);
+
     const { ok, targets } = targetsForToolInput(toolName, hookInput?.tool_input);
-    const servers = settings.readServers ? remoteServersForToolInput(toolName, hookInput?.tool_input) : [];
+    const servers = settings.readServers ? serversForToolInput(toolName, hookInput?.tool_input) : [];
     if ((!ok || targets.length === 0) && servers.length === 0) return null;
     if (settings.offline) return null;
 
@@ -227,7 +278,101 @@ export async function decide(hookInput, options = {}) {
   }
 }
 
-/** Get a key and read each server, all inside the MCP window. Concerning results only. */
+/**
+ * A call to an MCP tool. Local only, nothing is sent: ask when the server
+ * behind it changed its tools since it was pinned, then make the new tools the
+ * pin, so one change is asked about once.
+ */
+function askAboutChanges(toolName, settings) {
+  const env = settings.env ?? process.env;
+  if (!hasPins(env)) return null;
+  const pins = loadPins(env);
+  const changed = pendingForTool(pins, toolName);
+  if (changed.length === 0) return null;
+  const reason = buildChangeReason(changed);
+  for (const [, entry] of changed) acceptChange(entry);
+  try {
+    savePins(pins, env);
+  } catch {
+    // Unsaved, it asks again next time. Better than not asking.
+  }
+  return askPayload(reason);
+}
+
+/**
+ * Session start: re-read the pinned servers not read in the last day and tell
+ * the person about any whose tools changed. A session start cannot ask, so
+ * this is a message; the ask comes at the first call to one of that server's
+ * tools. A server with no name to match a tool call by is told about here and
+ * its new tools pinned at once.
+ */
+async function recheckPins(settings, options) {
+  if (settings.offline || !settings.readServers) return null;
+  const env = settings.env ?? process.env;
+  if (!hasPins(env)) return null;
+  const pins = loadPins(env);
+  const due = dueForRecheck(pins);
+  if (due.length === 0) return null;
+  const started = Date.now();
+  // Never mint here: a pin means a key was had before, and a session start
+  // should not be the thing that asks for a new one.
+  const key = await obtainKey({ env, origin: settings.origin, mint: false });
+  if (key === null) return null;
+  // Mark the attempt first: if the window closes mid-read, a slow server still
+  // waits a day instead of holding up every session start until then.
+  const now = new Date().toISOString();
+  for (const url of due) pins.servers[url].checked_at = now;
+  try {
+    savePins(pins, env);
+  } catch {
+    return null;
+  }
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const left = settings.sessionTimeoutMs - (Date.now() - started);
+  if (left < 200) return null;
+  const scans = await Promise.all(
+    due.map((url) => scanRemoteServer(url, { origin: settings.origin, key, timeoutMs: left, clientTag: options.clientTag, fetchImpl })),
+  );
+  const fresh = [];
+  due.forEach((url, i) => {
+    const entry = pins.servers[url];
+    const outcome = recordRecheck(entry, { fingerprint: scans[i]?.fingerprint ?? null, scan: scans[i] });
+    if (outcome === 'changed') fresh.push([url, entry]);
+  });
+  const message = fresh.length > 0 ? buildChangeMessage(fresh) : null;
+  for (const [, entry] of fresh) if (!entry.name) acceptChange(entry);
+  try {
+    savePins(pins, env);
+  } catch {
+    return null;
+  }
+  return message === null ? null : { systemMessage: message };
+}
+
+/** What a session start says about servers whose tools changed. */
+export function buildChangeMessage(changed) {
+  const lines = [];
+  lines.push(
+    changed.length === 1
+      ? 'Lazaretto: an MCP server you added changed its tools since it was pinned.'
+      : `Lazaretto: ${changed.length} MCP servers you added changed their tools since they were pinned.`,
+  );
+  lines.push('');
+  for (const [url, entry] of changed) lines.push(describeChange(url, entry));
+  lines.push('');
+  lines.push(
+    changed.every(([, e]) => e.name)
+      ? 'Claude Code will ask before the first call to one of its tools. Only tool names are shown, never the new text.'
+      : 'Only tool names are shown, never the new text. To read the tools yourself, run /mcp, or paste the URL at https://lazaretto.dev/check/mcp.',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Get a key and read each server, all inside the MCP window. Each complete
+ * read is pinned, so a later session can say what changed. Concerning results
+ * only are returned.
+ */
 async function readServers(servers, settings, options, fetchImpl) {
   const started = Date.now();
   const key = await obtainKey({
@@ -241,9 +386,27 @@ async function readServers(servers, settings, options, fetchImpl) {
   const left = settings.mcpTimeoutMs - (Date.now() - started);
   if (left < 200) return [];
   const results = await Promise.all(
-    servers.map((url) =>
+    servers.map(({ url }) =>
       scanRemoteServer(url, { origin: settings.origin, key, timeoutMs: left, clientTag: options.clientTag, fetchImpl }),
     ),
   );
+  pinAll(servers, results, settings.env ?? process.env);
   return results.filter(isConcerning);
+}
+
+/**
+ * Pin every server read in full. Pinned whatever the verdict: a person who
+ * goes ahead after an ask has still approved those tools, and a change from
+ * them is still worth knowing.
+ */
+function pinAll(servers, results, env) {
+  const read = results.map((r, i) => [servers[i], r]).filter(([, r]) => r !== null && r.fingerprint);
+  if (read.length === 0) return;
+  try {
+    const pins = loadPins(env);
+    for (const [server, r] of read) pinServer(pins, { url: server.url, name: server.name, fingerprint: r.fingerprint });
+    savePins(pins, env);
+  } catch {
+    // A pin that could not be saved costs a later warning, never this answer.
+  }
 }

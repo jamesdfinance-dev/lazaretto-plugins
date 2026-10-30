@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * The PreToolUse hook process.
+ * The hook process, for PreToolUse and SessionStart.
  *
  * Contract with Claude Code:
  *   - reads the hook input JSON on stdin
- *   - prints either nothing, or one PreToolUse payload with
- *     permissionDecision "ask"
+ *   - prints either nothing, or one payload: on PreToolUse a permissionDecision
+ *     "ask", on SessionStart a systemMessage naming servers whose tools changed
  *   - always exits 0
  *
  * It never exits 2. Exit 2 is a blocking error in Claude Code, and this hook is
@@ -21,9 +21,10 @@
  * Only a command that connects a remote MCP server gets the longer one (7
  * seconds), because reading a server's tools means our scanner connects to it;
  * people add a server rarely and on purpose. The hooks.json timeout (8) sits
- * above the longer window, so an install never waits on it.
+ * above the longer window, so an install never waits on it. A session start
+ * with pinned servers due a re-read gets 5 seconds, at most once a day.
  */
-import { decide, settingsFromEnv, needsLongBudget } from '../lib/decide.mjs';
+import { decide, settingsFromEnv, needsLongBudget, isPinRecheck } from '../lib/decide.mjs';
 import { CLIENT_TAG } from '../lib/version.mjs';
 
 /** Longest hook input we will read. Bigger than any real Bash command. */
@@ -106,14 +107,20 @@ async function main() {
         const left = settings.budgetMs - sinceStart() - 120;
         const timeoutMs = Math.max(100, Math.min(settings.timeoutMs, left));
         let mcpTimeoutMs = 0;
+        let sessionTimeoutMs = 0;
         if (needsLongBudget(input, settings)) {
           // Only now, knowing this call connects a remote server, take the
           // longer window: re-arm the watchdog for it.
           clearTimeout(watchdog);
           watchdog = setTimeout(() => process.exit(0), Math.max(100, settings.mcpBudgetMs - sinceStart()));
           mcpTimeoutMs = Math.max(100, Math.min(settings.mcpTimeoutMs, settings.mcpBudgetMs - sinceStart() - 120));
+        } else if (isPinRecheck(input, settings)) {
+          // A session start with pinned servers: the same, with its own window.
+          clearTimeout(watchdog);
+          watchdog = setTimeout(() => process.exit(0), Math.max(100, settings.sessionBudgetMs - sinceStart()));
+          sessionTimeoutMs = Math.max(100, Math.min(settings.sessionTimeoutMs, settings.sessionBudgetMs - sinceStart() - 120));
         }
-        payload = await decide(input, { settings: { ...settings, timeoutMs, mcpTimeoutMs }, clientTag: CLIENT_TAG });
+        payload = await decide(input, { settings: { ...settings, timeoutMs, mcpTimeoutMs, sessionTimeoutMs }, clientTag: CLIENT_TAG });
       }
     }
   } catch {

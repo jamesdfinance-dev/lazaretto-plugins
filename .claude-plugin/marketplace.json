@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "lazaretto-guard",
-      "description": "Before an agent connects a remote MCP server, read the tools it advertises for tool poisoning and hidden orders; before an install, check pinned package versions against published malicious-package advisories. Ask rather than block on anything found. Sends package names and versions, and a remote server's URL with a free key; never a URL that carries a secret. Never blocks, never exits non-zero.",
-      "version": "0.2.0",
+      "description": "Before an agent connects a remote MCP server, read the tools it advertises for tool poisoning and hidden orders, pin them, and ask before the first use of a server whose tools changed since (re-read once a day at session start); before an install, check pinned package versions against published malicious-package advisories. Ask rather than block on anything found. Sends package names and versions, and a remote server's URL with a free key (at the add, and once a day for pinned servers); never a URL that carries a secret. Never blocks, never exits non-zero.",
+      "version": "0.3.0",
       "author": {
         "name": "James Dykstra",
         "email": "jamesdfinance@gmail.com"

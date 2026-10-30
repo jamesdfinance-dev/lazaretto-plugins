@@ -17,12 +17,20 @@
  *
  *   lazaretto-guard check  <name@version> [...]
  *       The same call the hook makes, run by hand.
+ *
+ *   lazaretto-guard pins
+ *       The remote MCP servers whose tools are pinned, and any change not yet
+ *       asked about. No network.
+ *
+ *   lazaretto-guard unpin  <url>
+ *       Forget one pinned server, for example one you have removed. No network.
  */
 import { hashPath, verifyInstalled } from '../lib/hash.mjs';
 import { parseSpec } from '../lib/parse.mjs';
 import { checkSpecs } from '../lib/api.mjs';
 import { settingsFromEnv } from '../lib/decide.mjs';
 import { CLIENT_TAG, VERSION } from '../lib/version.mjs';
+import { loadPins, savePins, pinsPath } from '../lib/pins.mjs';
 
 const USAGE = `lazaretto-guard ${VERSION}
 
@@ -30,9 +38,11 @@ const USAGE = `lazaretto-guard ${VERSION}
   verify <path> <expected-hash>    compare on-disk bytes to a hash you have (no network)
   lookup <path>                    send only a sha256 of the content, nothing else
   check  <name@version> [...]      the call the hook makes, run by hand
+  pins                             MCP servers whose tools are pinned (no network)
+  unpin  <url>                     forget one pinned server (no network)
 
 Environment:
-  LAZARETTO_GUARD_MODE=full|hash|offline|off
+  LAZARETTO_GUARD_MODE=full|advisories|hash|offline|off
   LAZARETTO_GUARD_DISABLE=1
   LAZARETTO_GUARD_API=<origin>
 `;
@@ -117,6 +127,38 @@ async function main(argv) {
     for (const hit of answer.hits) {
       out(`${hit.name}@${hit.version}  ${hit.ids.join(', ')}`);
     }
+    return 0;
+  }
+
+  if (cmd === 'pins') {
+    const pins = loadPins(process.env);
+    const urls = Object.keys(pins.servers);
+    if (urls.length === 0) {
+      out('No MCP server tools are pinned.');
+      return 0;
+    }
+    for (const url of urls) {
+      const e = pins.servers[url];
+      const pending = e.change ? '  changed, not yet asked about' : '';
+      out(`${e.name ?? '(no name)'}  ${url}  ${Object.keys(e.tools).length} tools  pinned ${e.pinned_at.slice(0, 10)}  read ${e.checked_at.slice(0, 10)}${pending}`);
+    }
+    out(`\n${pinsPath(process.env)}`);
+    return 0;
+  }
+
+  if (cmd === 'unpin') {
+    if (args.length < 1) {
+      out(USAGE);
+      return 64;
+    }
+    const pins = loadPins(process.env);
+    if (!(args[0] in pins.servers)) {
+      out(`Not pinned: ${args[0]}. Run \`lazaretto-guard pins\` for the exact URLs.`);
+      return 1;
+    }
+    delete pins.servers[args[0]];
+    savePins(pins, process.env);
+    out(`Unpinned ${args[0]}.`);
     return 0;
   }
 

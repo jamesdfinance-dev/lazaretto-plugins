@@ -1,5 +1,5 @@
 {
-  "description": "Before an install runs, check pinned package versions against published malicious-package advisories, and read the tools a remote MCP server advertises before it is connected. Ask rather than block on anything found.",
+  "description": "Before an install runs, check pinned package versions against published malicious-package advisories, and read the tools a remote MCP server advertises before it is connected, keeping a fingerprint of them. Once a day at session start, re-read those servers, and ask before the first call to one whose tools changed. Ask rather than block on anything found.",
   "hooks": {
     "PreToolUse": [
       {
@@ -19,6 +19,28 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs\"",
             "timeout": 8
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs\"",
+            "timeout": 7
           }
         ]
       }
