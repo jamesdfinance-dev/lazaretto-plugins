@@ -22,9 +22,10 @@
  * or an unreachable service, is silence.
  */
 import { mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { tokenize } from './tokenize.mjs';
+import { configDir } from './paths.mjs';
+import { readFingerprint } from './pins.mjs';
 
 /** Most servers we will read in one command, so one hook stays bounded. */
 const MAX_SERVERS = 3;
@@ -50,15 +51,20 @@ export function shareableUrl(raw) {
   return u.toString();
 }
 
+/** Options on `claude mcp add` that take a value, so the value is not read as the server name. */
+const VALUE_FLAGS = new Set(['--transport', '-t', '--scope', '-s', '--env', '-e', '--callback-port']);
+
 /**
- * The remote MCP server URLs a Bash command is about to add. Only `claude mcp
- * add` segments are read; a URL anywhere else in a command is not a server
- * being connected. A segment carrying an auth flag yields nothing.
+ * The remote MCP servers a Bash command is about to add, as `{ url, name }`.
+ * Only `claude mcp add` segments are read; a URL anywhere else in a command is
+ * not a server being connected. A segment carrying an auth flag yields
+ * nothing. The name is the positional just before the URL, or null when that
+ * cannot be told apart from an option's value.
  */
-export function remoteMcpUrlsFromCommand(command) {
+export function remoteMcpServersFromCommand(command) {
   const { ok, segments } = tokenize(command);
   if (!ok) return [];
-  const urls = [];
+  const servers = [];
   for (const tokens of segments) {
     // `claude` has to be the command itself, after any VAR=value prefixes.
     // `echo claude mcp add ...` mentions a server; it does not connect one.
@@ -70,21 +76,33 @@ export function remoteMcpUrlsFromCommand(command) {
     // Anything after `--` is a stdio command, handled by the advisory check.
     const sep = rest.indexOf('--');
     const head = sep === -1 ? rest : rest.slice(0, sep);
-    for (const t of head) {
+    head.forEach((t, i) => {
       const url = shareableUrl(t);
-      if (url !== null && !urls.includes(url)) urls.push(url);
-    }
+      if (url === null || servers.some((s) => s.url === url)) return;
+      const prev = head[i - 1];
+      const named = i > 0 && !prev.startsWith('-') && !(i > 1 && VALUE_FLAGS.has(head[i - 2]));
+      servers.push({ url, name: named ? prev : null });
+    });
   }
-  return urls.slice(0, MAX_SERVERS);
+  return servers.slice(0, MAX_SERVERS);
+}
+
+/** The URLs alone, for callers that do not need the names. */
+export function remoteMcpUrlsFromCommand(command) {
+  return remoteMcpServersFromCommand(command).map((s) => s.url);
 }
 
 /**
- * Remote server URLs in MCP config text (a whole file or an edit fragment).
- * An entry with headers is skipped for the same reason as an auth flag.
+ * Remote servers in MCP config text (a whole file or an edit fragment), as
+ * `{ url, name }`. An entry with headers is skipped for the same reason as an
+ * auth flag. A fragment carries no reliable name, so its name is null.
  */
-export function remoteMcpUrlsFromConfigText(text) {
+export function remoteMcpServersFromConfigText(text) {
   if (typeof text !== 'string' || text === '') return [];
-  const urls = [];
+  const servers = [];
+  const add = (url, name) => {
+    if (url !== null && !servers.some((s) => s.url === url)) servers.push({ url, name });
+  };
   let doc = null;
   try {
     doc = JSON.parse(text);
@@ -92,35 +110,36 @@ export function remoteMcpUrlsFromConfigText(text) {
     doc = null;
   }
   if (doc && typeof doc === 'object') {
-    const servers = doc.mcpServers && typeof doc.mcpServers === 'object' ? doc.mcpServers : doc;
-    for (const entry of Object.values(servers)) {
+    const entries = doc.mcpServers && typeof doc.mcpServers === 'object' ? doc.mcpServers : doc;
+    for (const [name, entry] of Object.entries(entries)) {
       if (!entry || typeof entry !== 'object' || entry.headers) continue;
-      const url = shareableUrl(entry.url);
-      if (url !== null && !urls.includes(url)) urls.push(url);
+      add(shareableUrl(entry.url), name);
     }
-    return urls.slice(0, MAX_SERVERS);
+    return servers.slice(0, MAX_SERVERS);
   }
   // An edit fragment: take "url": "..." pairs, unless the fragment mentions headers.
   if (/"headers"\s*:/.test(text)) return [];
-  for (const m of text.matchAll(/"url"\s*:\s*"([^"]{1,2048})"/g)) {
-    const url = shareableUrl(m[1]);
-    if (url !== null && !urls.includes(url)) urls.push(url);
-  }
-  return urls.slice(0, MAX_SERVERS);
+  for (const m of text.matchAll(/"url"\s*:\s*"([^"]{1,2048})"/g)) add(shareableUrl(m[1]), null);
+  return servers.slice(0, MAX_SERVERS);
+}
+
+/** The URLs alone, for callers that do not need the names. */
+export function remoteMcpUrlsFromConfigText(text) {
+  return remoteMcpServersFromConfigText(text).map((s) => s.url);
 }
 
 /** Where the free key is kept between runs. */
 export function keyPath(env = process.env) {
-  const base = env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME !== '' ? env.XDG_CONFIG_HOME : join(homedir(), '.config');
-  return join(base, 'lazaretto', 'key');
+  return join(configDir(env), 'key');
 }
 
 /**
  * An API key for the scan: LAZARETTO_API_KEY if set, else the one this plugin
- * saved before, else a free one minted now and saved (readable by the owner
- * only). Resolves to null when none can be had; the caller stays silent.
+ * saved before, else (unless `mint` is false) a free one minted now and saved
+ * (readable by the owner only). Resolves to null when none can be had; the
+ * caller stays silent.
  */
-export async function obtainKey({ env = process.env, origin, timeoutMs, clientTag, fetchImpl = fetch } = {}) {
+export async function obtainKey({ env = process.env, origin, timeoutMs, clientTag, mint = true, fetchImpl = fetch } = {}) {
   const fromEnv = env.LAZARETTO_API_KEY?.trim();
   if (fromEnv) return fromEnv;
   const file = keyPath(env);
@@ -130,6 +149,7 @@ export async function obtainKey({ env = process.env, origin, timeoutMs, clientTa
   } catch {
     /* no saved key yet */
   }
+  if (!mint) return null;
   try {
     const res = await fetchImpl(`${origin}/v1/trial`, {
       method: 'POST',
@@ -151,9 +171,10 @@ export async function obtainKey({ env = process.env, origin, timeoutMs, clientTa
 }
 
 /**
- * Scan one remote MCP server. Resolves to `{ url, verdict, risk, findings }`
- * for a completed scan, or null for anything else (no credits, an error
- * verdict, a timeout). Null is silence, never a clear.
+ * Scan one remote MCP server. Resolves to `{ url, verdict, risk, findings,
+ * fingerprint }` for a completed scan, or null for anything else (no credits,
+ * an error verdict, a timeout). Null is silence, never a clear. `fingerprint`
+ * is null when the report has none worth pinning (an older API, a partial read).
  */
 export async function scanRemoteServer(url, { origin, key, timeoutMs, clientTag, fetchImpl = fetch }) {
   try {
@@ -176,6 +197,7 @@ export async function scanRemoteServer(url, { origin, key, timeoutMs, clientTag,
       verdict: report.verdict,
       risk: typeof report.risk === 'string' ? report.risk : null,
       findings: Array.isArray(report.findings) ? report.findings : [],
+      fingerprint: readFingerprint(report.tool_fingerprint),
     };
   } catch {
     return null;
