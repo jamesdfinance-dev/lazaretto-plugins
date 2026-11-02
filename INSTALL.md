@@ -1,6 +1,6 @@
 # Install
 
-What leaves your machine: on an install command, package names and exact versions; when a remote MCP server is being connected, that server's URL and a free key the plugin requests once; once a day at session start, the URLs of the servers added that way, to read their tools again. A URL carrying a secret is never sent. Nothing else. Read the [README](README.md) before you install a hook that runs on every Bash call, every file write, every MCP tool call (where it only reads a local file) and every session start.
+What leaves your machine: on an install command, package names and exact versions; when a remote MCP server is being connected, that server's URL and a free key the plugin requests once; at session start, the URLs of the servers added that way once a day, and of remote servers already in your Claude Code config once the plugin has told you which (`LAZARETTO_GUARD_DISCOVER=off` stops that). A URL carrying a secret, or a config entry with auth headers, OAuth settings or a private hostname, is never sent. Nothing else. Read the [README](README.md) before you install a hook that runs on every Bash call, every file write, every MCP tool call (where it only reads a local file) and every session start.
 
 ## Requirements
 

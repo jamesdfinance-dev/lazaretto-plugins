@@ -33,6 +33,12 @@ const MAX_PINS = 50;
 /** Most servers re-read in one session start. The rest wait for the next one. */
 export const MAX_RECHECK = 5;
 
+/** Most servers from the config read for the first time in one session start. */
+const MAX_FIRST_READ = 3;
+
+/** Most URLs kept as not to be read, so the file stays bounded. */
+const MAX_IGNORED = 200;
+
 /** Most tool names shown in one list before "and N more". */
 const MAX_NAMES = 10;
 
@@ -76,9 +82,29 @@ export function cleanServerName(name) {
   return typeof name === 'string' && SERVER_NAME.test(name) ? name : null;
 }
 
+const isoOrNull = (v) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? v : null);
+
+/**
+ * What reading servers from the config has to remember: when the person was
+ * told about it, when a key was last asked for, which servers were tried and
+ * could not be read, and which they said not to read.
+ */
+function readDiscovery(raw) {
+  const tried = Object.create(null);
+  if (raw?.tried && typeof raw.tried === 'object') {
+    for (const [url, at] of Object.entries(raw.tried)) if (isoOrNull(at)) tried[url] = at;
+  }
+  return {
+    notice_at: isoOrNull(raw?.notice_at),
+    mint_tried_at: isoOrNull(raw?.mint_tried_at),
+    tried,
+    ignored: Array.isArray(raw?.ignored) ? raw.ignored.filter((u) => typeof u === 'string') : [],
+  };
+}
+
 /** The pins on disk. A missing or unreadable file is no pins. */
 export function loadPins(env = process.env) {
-  const empty = { servers: Object.create(null) };
+  const empty = { servers: Object.create(null), discovery: readDiscovery(null) };
   let doc;
   try {
     doc = JSON.parse(readFileSync(pinsPath(env), 'utf8'));
@@ -100,7 +126,7 @@ export function loadPins(env = process.env) {
     if (to !== null) kept.change = { ...entry.change, to };
     servers[url] = kept;
   }
-  return { servers };
+  return { servers, discovery: readDiscovery(doc.discovery) };
 }
 
 /** True when there is a pin file at all. Cheap: the hook asks this on every MCP tool call. */
@@ -113,7 +139,8 @@ export function savePins(pins, env = process.env) {
   const file = pinsPath(env);
   mkdirSync(configDir(env), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify({ version: 1, servers: pins.servers }, null, 2)}\n`, { mode: 0o600 });
+  const doc = { version: 1, servers: pins.servers, ...(pins.discovery ? { discovery: pins.discovery } : {}) };
+  writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
   chmodSync(tmp, 0o600);
   // A rename is atomic, so a hook killed mid-write leaves the old file, never half a new one.
   renameSync(tmp, file);
@@ -123,6 +150,10 @@ export function savePins(pins, env = process.env) {
 export function pinServer(pins, { url, name, fingerprint, now = new Date() }) {
   const at = now.toISOString();
   pins.servers[url] = { name: cleanServerName(name), ...fingerprint, pinned_at: at, checked_at: at };
+  if (pins.discovery) {
+    delete pins.discovery.tried[url];
+    pins.discovery.ignored = pins.discovery.ignored.filter((u) => u !== url);
+  }
   const urls = Object.keys(pins.servers);
   if (urls.length > MAX_PINS) {
     urls.sort((a, b) => pins.servers[a].pinned_at.localeCompare(pins.servers[b].pinned_at));
@@ -137,6 +168,56 @@ export function dueForRecheck(pins, now = new Date()) {
     .filter((url) => now.getTime() - Date.parse(pins.servers[url].checked_at) >= RECHECK_MS || Number.isNaN(Date.parse(pins.servers[url].checked_at)))
     .sort((a, b) => pins.servers[a].checked_at.localeCompare(pins.servers[b].checked_at))
     .slice(0, MAX_RECHECK);
+}
+
+/** The configured servers not pinned yet, leaving out any the person said not to read. */
+export function unseenServers(pins, configured) {
+  return configured.filter((s) => !(s.url in pins.servers) && !pins.discovery.ignored.includes(s.url));
+}
+
+/** Which of those to read now. One that could not be read waits a day, like any other. */
+export function dueForFirstRead(pins, unseen, now = new Date()) {
+  const { tried } = pins.discovery;
+  for (const [url, at] of Object.entries(tried)) {
+    if (now.getTime() - Date.parse(at) >= RECHECK_MS) delete tried[url];
+  }
+  return unseen.filter((s) => !(s.url in tried)).slice(0, MAX_FIRST_READ);
+}
+
+/** Never read this server from the config again, unless it is added through Claude. */
+export function ignoreServer(pins, url) {
+  delete pins.servers[url];
+  delete pins.discovery.tried[url];
+  if (!pins.discovery.ignored.includes(url)) pins.discovery.ignored = [...pins.discovery.ignored, url].slice(-MAX_IGNORED);
+}
+
+/** What a flagged read keeps: our rule text and where it fired, never the snippet. */
+function verdictOf(scan) {
+  if (!scan || (scan.verdict !== 'flagged' && scan.verdict !== 'malicious')) return null;
+  return {
+    verdict: scan.verdict,
+    risk: scan.risk,
+    // Never the snippet: that is the server's text.
+    findings: scan.findings.slice(0, 5).map((f) => ({
+      rule_id: typeof f.rule_id === 'string' ? f.rule_id : 'finding',
+      severity: typeof f.severity === 'string' ? f.severity : undefined,
+      description: typeof f.description === 'string' ? f.description.slice(0, 160) : undefined,
+      evidence: { file: f.evidence?.file, line: f.evidence?.line },
+    })),
+  };
+}
+
+/**
+ * Pin a server read for the first time from the config. Nobody was asked when
+ * it was added, so a flagged read is held as pending and asked about at the
+ * first call to its tools, the same way a change is. Returns true when flagged.
+ */
+export function pinFirstRead(pins, { url, name, scan, now = new Date() }) {
+  pinServer(pins, { url, name, fingerprint: scan.fingerprint, now });
+  const flagged = verdictOf(scan);
+  if (flagged === null) return false;
+  pins.servers[url].change = { first_read: true, to: scan.fingerprint, seen_at: now.toISOString(), ...flagged };
+  return true;
 }
 
 /** Which tools differ between two fingerprints, or null when nothing an agent reads changed. */
@@ -161,23 +242,14 @@ export function recordRecheck(entry, { fingerprint, scan = null, now = new Date(
   entry.checked_at = now.toISOString();
   if (fingerprint === null) return 'unread';
   if (fingerprint.sha256 === entry.sha256) {
-    // Changed back before anyone was told: nothing to tell.
-    delete entry.change;
+    // Changed back before anyone was told: nothing to tell. A flagged first
+    // read has not changed back, it is still what the server says.
+    if (!entry.change?.first_read) delete entry.change;
     return 'unchanged';
   }
   if (entry.change && entry.change.to.sha256 === fingerprint.sha256) return 'known';
   entry.change = { ...diffTools(entry, fingerprint), to: fingerprint, seen_at: now.toISOString() };
-  if (scan && (scan.verdict === 'flagged' || scan.verdict === 'malicious')) {
-    entry.change.verdict = scan.verdict;
-    entry.change.risk = scan.risk;
-    // Our rule text and where it fired. Never the snippet: that is the server's text.
-    entry.change.findings = scan.findings.slice(0, 5).map((f) => ({
-      rule_id: typeof f.rule_id === 'string' ? f.rule_id : 'finding',
-      severity: typeof f.severity === 'string' ? f.severity : undefined,
-      description: typeof f.description === 'string' ? f.description.slice(0, 160) : undefined,
-      evidence: { file: f.evidence?.file, line: f.evidence?.line },
-    }));
-  }
+  Object.assign(entry.change, verdictOf(scan));
   return 'changed';
 }
 
@@ -213,13 +285,14 @@ function nameList(label, names) {
 /** The lines naming what changed on one server. Names and dates only, never tool text. */
 export function describeChange(url, entry) {
   const c = entry.change;
-  const lines = [`  ${entry.name ? `${entry.name}  ` : ''}${url}  pinned ${entry.pinned_at.slice(0, 10)}, changed by ${c.seen_at.slice(0, 10)}`];
+  const when = c.first_read ? `first read ${c.seen_at.slice(0, 10)}` : `pinned ${entry.pinned_at.slice(0, 10)}, changed by ${c.seen_at.slice(0, 10)}`;
+  const lines = [`  ${entry.name ? `${entry.name}  ` : ''}${url}  ${when}`];
   for (const line of [nameList('added', c.added), nameList('removed', c.removed), nameList('changed', c.edited)]) {
     if (line !== null) lines.push(line);
   }
   if (c.instructions_changed) lines.push("    the server's instructions changed");
   if (c.verdict) {
-    lines.push(`    the new tools read ${c.verdict}${c.risk ? `, risk ${c.risk}` : ''}:`);
+    lines.push(`    ${c.first_read ? 'its tools' : 'the new tools'} read ${c.verdict}${c.risk ? `, risk ${c.risk}` : ''}:`);
     for (const f of c.findings ?? []) {
       const where = [f.evidence?.file, f.evidence?.line ? `line ${f.evidence.line}` : null].filter(Boolean).join(', ');
       lines.push(`      ${f.rule_id}${f.severity ? ` [${f.severity}]` : ''}${where ? ` (${where})` : ''}${f.description ? `: ${f.description}` : ''}`);

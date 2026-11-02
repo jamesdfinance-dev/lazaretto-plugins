@@ -6,8 +6,10 @@
  * Claude Code sends for four commands and checks what comes back. Then the
  * pinned demo: the add pins the demo server's tools, the pin is altered the
  * way a server changing its tools would look, and a session start and a call
- * to one of its tools must name the change. Labelled `+ci`, so the service
- * never counts this as someone using the plugin.
+ * to one of its tools must name the change. Then the demo server sitting in a
+ * config file nobody told the hook about: a session says it will be read, the
+ * next one reads it and names the finding, and its first tool call asks.
+ * Labelled `+ci`, so the service never counts this as someone using the plugin.
  *
  *   node plugins/lazaretto-guard/test/live/live-check.mjs
  */
@@ -47,13 +49,13 @@ if (!key) {
 if (process.env.GITHUB_ACTIONS) console.log(`::add-mask::${key}`);
 
 /** Run the hook once with one input. `got` is ask, message (a session start's systemMessage) or silent. */
-function runHook(input, configHome) {
+function runHook(input, configHome, claudeDir = mkdtempSync(join(tmpdir(), 'guard-claude-'))) {
   const started = Date.now();
   const r = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(input),
     encoding: 'utf8',
     timeout: 9000,
-    env: { PATH: process.env.PATH, XDG_CONFIG_HOME: configHome, LAZARETTO_API_KEY: key, LAZARETTO_GUARD_API: ORIGIN, LAZARETTO_GUARD_CLIENT_SUFFIX: SUFFIX },
+    env: { PATH: process.env.PATH, XDG_CONFIG_HOME: configHome, LAZARETTO_API_KEY: key, CLAUDE_CONFIG_DIR: claudeDir, LAZARETTO_GUARD_API: ORIGIN, LAZARETTO_GUARD_CLIENT_SUFFIX: SUFFIX },
   });
   const ms = Date.now() - started;
   let got = 'silent';
@@ -134,6 +136,25 @@ if (pinned) {
 } else {
   rows.push('| pinned demo: change, ask, re-read | not run | no pin | | FAIL |');
 }
+
+// A server already in the config. The read and the rules are the real ones.
+const claudeDir = mkdtempSync(join(tmpdir(), 'guard-claude-'));
+const configHome = mkdtempSync(join(tmpdir(), 'guard-config-'));
+writeFileSync(join(claudeDir, '.claude.json'), JSON.stringify({ mcpServers: { 'lazaretto-demo': { type: 'http', url: DEMO } } }));
+const startHere = { hook_event_name: 'SessionStart', source: 'startup', cwd: claudeDir };
+const told = runHook(startHere, configHome, claudeDir);
+const unpinnedYet = (() => {
+  try {
+    return !(DEMO in JSON.parse(readFileSync(join(configHome, 'lazaretto', 'pins.json'), 'utf8')).servers);
+  } catch {
+    return false;
+  }
+})();
+record('configured demo: the first session says so and sends nothing', 'message', 'Nothing has been sent yet', told, unpinnedYet);
+record('configured demo: the next session reads it and names the finding', 'message', 'mcp.directive_block', runHook(startHere, configHome, claudeDir));
+const demoCall = { hook_event_name: 'PreToolUse', tool_name: 'mcp__lazaretto-demo__demo_echo', tool_input: {} };
+record('configured demo: the first call to its tools asks', 'ask', 'mcp.directive_block', runHook(demoCall, configHome, claudeDir));
+record('configured demo: asked once, the next call is silent', 'silent', null, runHook(demoCall, configHome, claudeDir));
 
 const report = rows.join('\n');
 console.log(report);

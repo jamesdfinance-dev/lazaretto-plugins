@@ -6,6 +6,7 @@
  *   - reads the hook input JSON on stdin
  *   - prints either nothing, or one payload: on PreToolUse a permissionDecision
  *     "ask", on SessionStart a systemMessage naming servers whose tools changed
+ *     or that read flagged, or saying once that configured servers will be read
  *   - always exits 0
  *
  * It never exits 2. Exit 2 is a blocking error in Claude Code, and this hook is
@@ -22,9 +23,9 @@
  * seconds), because reading a server's tools means our scanner connects to it;
  * people add a server rarely and on purpose. The hooks.json timeout (8) sits
  * above the longer window, so an install never waits on it. A session start
- * with pinned servers due a re-read gets 5 seconds, at most once a day.
+ * with servers due a read gets 5 seconds, each server at most once a day.
  */
-import { decide, settingsFromEnv, needsLongBudget, isPinRecheck } from '../lib/decide.mjs';
+import { decide, settingsFromEnv, needsLongBudget, isSessionRead } from '../lib/decide.mjs';
 import { CLIENT_TAG } from '../lib/version.mjs';
 
 /** Longest hook input we will read. Bigger than any real Bash command. */
@@ -114,8 +115,8 @@ async function main() {
           clearTimeout(watchdog);
           watchdog = setTimeout(() => process.exit(0), Math.max(100, settings.mcpBudgetMs - sinceStart()));
           mcpTimeoutMs = Math.max(100, Math.min(settings.mcpTimeoutMs, settings.mcpBudgetMs - sinceStart() - 120));
-        } else if (isPinRecheck(input, settings)) {
-          // A session start with pinned servers: the same, with its own window.
+        } else if (isSessionRead(input, settings)) {
+          // A session start: the same, with its own window. With nothing due it is over at once.
           clearTimeout(watchdog);
           watchdog = setTimeout(() => process.exit(0), Math.max(100, settings.sessionBudgetMs - sinceStart()));
           sessionTimeoutMs = Math.max(100, Math.min(settings.sessionTimeoutMs, settings.sessionBudgetMs - sinceStart() - 120));

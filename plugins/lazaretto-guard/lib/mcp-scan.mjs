@@ -12,8 +12,8 @@
  *
  * What leaves the machine on this path: the server's URL, so our scanner can
  * ask the server for its tool list itself, and a free API key. Nothing else.
- * A URL that carries a secret (a query string, user:password@, or an auth
- * header on the command) is never sent: a server that needs credentials to
+ * A URL that carries a secret (a query string, user:password@, a token in the
+ * path, or an auth header on the command) is never sent: a server that needs credentials to
  * list its tools is not one we can read anyway, and a secret has no business
  * leaving the machine for a check.
  *
@@ -34,9 +34,21 @@ const MAX_SERVERS = 3;
 const AUTH_FLAGS = new Set(['--header', '-H', '--client-secret', '--client-id']);
 
 /**
+ * True when a URL path segment reads as a credential. Some hosted MCP servers
+ * put the account's token in the path, where it looks like any other URL. This
+ * errs towards not sending: a long name that trips it costs one read.
+ */
+function looksLikeSecret(segment) {
+  if (/^(sk|pk|rk|ghp|gho|ghs|glpat|xox[a-z]|ya29)[-_.]/i.test(segment)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) return true;
+  if (/^[0-9a-f]{16,}$/i.test(segment)) return true;
+  return (segment.match(/[A-Za-z0-9]{20,}/g) ?? []).some((run) => /[A-Za-z]/.test(run) && /[0-9]/.test(run));
+}
+
+/**
  * A URL we are willing to send for a scan: http(s), no credentials in it, no
- * query string or fragment (where tokens usually live). Returns the URL to
- * send, or null.
+ * query string or fragment (where tokens usually live), no path segment that
+ * reads as a token. Returns the URL to send, or null.
  */
 export function shareableUrl(raw) {
   if (typeof raw !== 'string' || !/^https?:\/\//i.test(raw)) return null;
@@ -48,6 +60,7 @@ export function shareableUrl(raw) {
   }
   if (u.username !== '' || u.password !== '') return null;
   if (u.search !== '' || u.hash !== '') return null;
+  if (u.pathname.split('/').some(looksLikeSecret)) return null;
   return u.toString();
 }
 
@@ -175,8 +188,10 @@ export async function obtainKey({ env = process.env, origin, timeoutMs, clientTa
  * fingerprint }` for a completed scan, or null for anything else (no credits,
  * an error verdict, a timeout). Null is silence, never a clear. `fingerprint`
  * is null when the report has none worth pinning (an older API, a partial read).
+ * `read` says why a session start is reading it (`recheck` or `discover`), so
+ * the service can count those apart from a server being added.
  */
-export async function scanRemoteServer(url, { origin, key, timeoutMs, clientTag, fetchImpl = fetch }) {
+export async function scanRemoteServer(url, { origin, key, timeoutMs, clientTag, read, fetchImpl = fetch }) {
   try {
     const res = await fetchImpl(`${origin}/v1/scan`, {
       method: 'POST',
@@ -185,6 +200,7 @@ export async function scanRemoteServer(url, { origin, key, timeoutMs, clientTag,
         'x-api-key': key,
         'x-lazaretto-client': clientTag ?? 'lazaretto-guard',
         'user-agent': clientTag ?? 'lazaretto-guard',
+        ...(read ? { 'x-lazaretto-read': read } : {}),
       },
       body: JSON.stringify({ target: { type: 'mcp_server', ref: url }, depth: 'full' }),
       signal: AbortSignal.timeout(Math.max(100, timeoutMs)),
