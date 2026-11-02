@@ -30,7 +30,7 @@ import { parseSpec } from '../lib/parse.mjs';
 import { checkSpecs } from '../lib/api.mjs';
 import { settingsFromEnv } from '../lib/decide.mjs';
 import { CLIENT_TAG, VERSION } from '../lib/version.mjs';
-import { loadPins, savePins, pinsPath } from '../lib/pins.mjs';
+import { loadPins, savePins, pinsPath, ignoreServer } from '../lib/pins.mjs';
 
 const USAGE = `lazaretto-guard ${VERSION}
 
@@ -39,7 +39,7 @@ const USAGE = `lazaretto-guard ${VERSION}
   lookup <path>                    send only a sha256 of the content, nothing else
   check  <name@version> [...]      the call the hook makes, run by hand
   pins                             MCP servers whose tools are pinned (no network)
-  unpin  <url>                     forget one pinned server (no network)
+  unpin  <url>                     forget a server and do not read it from your config again (no network)
 
 Environment:
   LAZARETTO_GUARD_MODE=full|advisories|hash|offline|off
@@ -139,7 +139,7 @@ async function main(argv) {
     }
     for (const url of urls) {
       const e = pins.servers[url];
-      const pending = e.change ? '  changed, not yet asked about' : '';
+      const pending = e.change ? `  ${e.change.first_read ? 'flagged' : 'changed'}, not yet asked about` : '';
       out(`${e.name ?? '(no name)'}  ${url}  ${Object.keys(e.tools).length} tools  pinned ${e.pinned_at.slice(0, 10)}  read ${e.checked_at.slice(0, 10)}${pending}`);
     }
     out(`\n${pinsPath(process.env)}`);
@@ -151,14 +151,18 @@ async function main(argv) {
       out(USAGE);
       return 64;
     }
-    const pins = loadPins(process.env);
-    if (!(args[0] in pins.servers)) {
-      out(`Not pinned: ${args[0]}. Run \`lazaretto-guard pins\` for the exact URLs.`);
+    let url = args[0];
+    try {
+      url = new URL(args[0]).toString();
+    } catch {
+      out(`Not a URL: ${args[0]}. Run \`lazaretto-guard pins\` for the exact URLs.`);
       return 1;
     }
-    delete pins.servers[args[0]];
+    const pins = loadPins(process.env);
+    const wasPinned = url in pins.servers;
+    ignoreServer(pins, url);
     savePins(pins, process.env);
-    out(`Unpinned ${args[0]}.`);
+    out(`${wasPinned ? 'Unpinned' : 'Was not pinned:'} ${url}. It will not be read from your config again. Adding it through Claude reads it again.`);
     return 0;
   }
 

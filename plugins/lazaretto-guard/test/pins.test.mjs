@@ -23,6 +23,8 @@ import { remoteMcpServersFromCommand, remoteMcpServersFromConfigText } from '../
 import { pinsPath, loadPins, savePins, readFingerprint, diffTools, RECHECK_MS } from '../lib/pins.mjs';
 
 const HOOK = fileURLToPath(new URL('../hooks/guard.mjs', import.meta.url));
+/** So these never read the config of whoever runs the tests. */
+const NO_CLAUDE_CONFIG = mkdtempSync(join(tmpdir(), 'lz-no-claude-'));
 const URL_A = 'https://example.com/mcp';
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -71,7 +73,7 @@ async function startApi(state) {
 }
 
 function settingsFor(origin, extra = {}) {
-  return settingsFromEnv({ XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), 'lz-pins-')), LAZARETTO_GUARD_API: origin, ...extra });
+  return settingsFromEnv({ XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), 'lz-pins-')), CLAUDE_CONFIG_DIR: NO_CLAUDE_CONFIG, LAZARETTO_GUARD_API: origin, ...extra });
 }
 
 const clear = (fp) => ({ verdict: 'clear', risk: 'none', findings: [], tool_fingerprint: fp });
@@ -374,7 +376,7 @@ test('the diff names added, removed and edited tools', () => {
 function runHook(input, env) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(process.execPath, [HOOK], { env: { PATH: process.env.PATH, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [HOOK], { env: { PATH: process.env.PATH, CLAUDE_CONFIG_DIR: NO_CLAUDE_CONFIG, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '';
     child.stdout.on('data', (c) => (out += c));
     const kill = setTimeout(() => child.kill('SIGKILL'), 9000);

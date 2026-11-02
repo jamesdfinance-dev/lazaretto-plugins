@@ -19,12 +19,18 @@ import {
   isConcerning,
   describeServer,
 } from './mcp-scan.mjs';
+import { configuredServers } from './discover.mjs';
 import {
   hasPins,
   loadPins,
   savePins,
   pinServer,
+  pinFirstRead,
+  unseenServers,
+  dueForFirstRead,
   dueForRecheck,
+  MAX_RECHECK,
+  RECHECK_MS,
   recordRecheck,
   acceptChange,
   pendingForTool,
@@ -63,6 +69,8 @@ export function settingsFromEnv(env = process.env) {
     // `advisories` turns the MCP read off and keeps only the identity check,
     // for anyone who does not want a server URL to leave the machine.
     readServers: mode !== 'advisories',
+    // Off leaves only the servers added through Claude, so the config is not read.
+    discover: (env.LAZARETTO_GUARD_DISCOVER ?? '').toLowerCase() !== 'off',
     env,
   };
 }
@@ -126,15 +134,41 @@ export function needsLongBudget(hookInput, settings) {
   return remoteServersForToolInput(hookInput?.tool_name, hookInput?.tool_input).length > 0;
 }
 
-/** True when this input is a session start that has pinned servers to re-read. */
-export function isPinRecheck(hookInput, settings) {
+/** True when this input is a session start that may read servers. With nothing due it is over at once. */
+export function isSessionRead(hookInput, settings) {
   if (hookInput?.hook_event_name !== 'SessionStart') return false;
-  if (settings && (settings.disabled || settings.offline || !settings.readServers)) return false;
-  return hasPins(settings?.env ?? process.env);
+  return !(settings && (settings.disabled || settings.offline || !settings.readServers));
 }
 
-/** The ask shown at the first use of a server whose tools changed since it was pinned. */
-export function buildChangeReason(changed) {
+/** The ask shown at the first use of a server that changed, or that read flagged the first time it was read. */
+export function buildChangeReason(pending) {
+  const changed = pending.filter(([, e]) => !e.change.first_read);
+  const first = pending.filter(([, e]) => e.change.first_read);
+  const parts = [];
+  if (changed.length > 0) parts.push(buildToolChangeReason(changed));
+  if (first.length > 0) {
+    parts.push(
+      [
+        firstReadHeading(first),
+        '',
+        ...first.map(([url, entry]) => describeChange(url, entry)),
+        '',
+        'These are signals from reading the text the server hands an agent, not a verdict on whoever runs it. Only our rule names are shown, never the text. ' +
+          'To read the tools yourself, run /mcp, or paste the URL at https://lazaretto.dev/check/mcp. ' +
+          'Lazaretto will not ask about this again unless the tools change.',
+      ].join('\n'),
+    );
+  }
+  return parts.join('\n\n');
+}
+
+function firstReadHeading(first) {
+  return first.length === 1
+    ? 'Lazaretto read the tools of an MCP server already in your config and found something worth a look:'
+    : `Lazaretto read the tools of ${first.length} MCP servers already in your config and found something worth a look:`;
+}
+
+function buildToolChangeReason(changed) {
   const lines = [];
   lines.push(
     changed.length === 1
@@ -243,7 +277,7 @@ export async function decide(hookInput, options = {}) {
     const settings = options.settings ?? settingsFromEnv(options.env ?? process.env);
     if (settings.disabled) return null;
 
-    if (hookInput?.hook_event_name === 'SessionStart') return await recheckPins(settings, options);
+    if (hookInput?.hook_event_name === 'SessionStart') return await atSessionStart(hookInput, settings, options);
 
     const toolName = hookInput?.tool_name;
     if (typeof toolName === 'string' && toolName.startsWith('mcp__')) return askAboutChanges(toolName, settings);
@@ -300,53 +334,136 @@ function askAboutChanges(toolName, settings) {
 }
 
 /**
- * Session start: re-read the pinned servers not read in the last day and tell
- * the person about any whose tools changed. A session start cannot ask, so
- * this is a message; the ask comes at the first call to one of that server's
- * tools. A server with no name to match a tool call by is told about here and
- * its new tools pinned at once.
+ * Session start. Three jobs, in this order: tell the person once before any
+ * server from their config is read; read the configured servers not pinned yet;
+ * re-read the pinned servers not read in the last day. A session start cannot
+ * ask, so what it finds is a message; the ask comes at the first call to one of
+ * that server's tools. A server with no name to match a tool call by is told
+ * about here and its new tools pinned at once.
  */
-async function recheckPins(settings, options) {
+async function atSessionStart(hookInput, settings, options) {
   if (settings.offline || !settings.readServers) return null;
   const env = settings.env ?? process.env;
-  if (!hasPins(env)) return null;
   const pins = loadPins(env);
-  const due = dueForRecheck(pins);
-  if (due.length === 0) return null;
+  const unseen = settings.discover ? unseenServers(pins, configuredServers({ env, cwd: hookInput.cwd })) : [];
   const started = Date.now();
-  // Never mint here: a pin means a key was had before, and a session start
-  // should not be the thing that asks for a new one.
-  const key = await obtainKey({ env, origin: settings.origin, mint: false });
-  if (key === null) return null;
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const messages = [];
+
+  // The add path sends a URL because someone just asked to connect it. These
+  // were configured with no thought of us, so nothing goes until the person has
+  // been told and had a session to say no.
+  let firstRead = [];
+  if (unseen.length > 0 && pins.discovery.notice_at === null) {
+    pins.discovery.notice_at = now;
+    messages.push(buildDiscoveryNotice(unseen));
+  } else {
+    firstRead = dueForFirstRead(pins, unseen, nowDate);
+  }
+  const due = dueForRecheck(pins, nowDate).slice(0, MAX_RECHECK - firstRead.length);
+
+  const finish = () => (messages.length === 0 ? null : { systemMessage: messages.join('\n\n') });
+  try {
+    if (messages.length > 0) savePins(pins, env);
+  } catch {
+    // Unsaved, this notice would repeat every session and the reads would never start.
+    return null;
+  }
+  if (firstRead.length === 0 && due.length === 0) return finish();
+
+  const fetchImpl = options.fetchImpl ?? fetch;
+  let key = await obtainKey({ env, origin: settings.origin, mint: false });
+  if (key === null && firstRead.length > 0) {
+    // First use, for someone who only ever added servers from a terminal. A
+    // refused key is not asked for again the same day.
+    const tried = pins.discovery.mint_tried_at;
+    if (tried === null || nowDate.getTime() - Date.parse(tried) >= RECHECK_MS) {
+      pins.discovery.mint_tried_at = now;
+      try {
+        savePins(pins, env);
+      } catch {
+        return finish();
+      }
+      key = await obtainKey({ env, origin: settings.origin, timeoutMs: Math.min(1500, settings.sessionTimeoutMs), clientTag: options.clientTag, fetchImpl });
+    }
+  }
+  if (key === null) return finish();
+
   // Mark the attempt first: if the window closes mid-read, a slow server still
   // waits a day instead of holding up every session start until then.
-  const now = new Date().toISOString();
   for (const url of due) pins.servers[url].checked_at = now;
+  for (const { url } of firstRead) pins.discovery.tried[url] = now;
   try {
     savePins(pins, env);
   } catch {
-    return null;
+    return finish();
   }
-  const fetchImpl = options.fetchImpl ?? fetch;
   const left = settings.sessionTimeoutMs - (Date.now() - started);
-  if (left < 200) return null;
-  const scans = await Promise.all(
-    due.map((url) => scanRemoteServer(url, { origin: settings.origin, key, timeoutMs: left, clientTag: options.clientTag, fetchImpl })),
-  );
+  if (left < 200) return finish();
+  const read = (url, kind) =>
+    scanRemoteServer(url, { origin: settings.origin, key, timeoutMs: left, clientTag: options.clientTag, read: kind, fetchImpl });
+  const [firstScans, recheckScans] = await Promise.all([
+    Promise.all(firstRead.map(({ url }) => read(url, 'discover'))),
+    Promise.all(due.map((url) => read(url, 'recheck'))),
+  ]);
+
+  const flagged = [];
+  const flaggedUnpinned = [];
+  firstRead.forEach(({ url, name }, i) => {
+    const scan = firstScans[i];
+    if (scan?.fingerprint) {
+      if (pinFirstRead(pins, { url, name, scan, now: nowDate })) flagged.push([url, pins.servers[url]]);
+    } else if (scan && isConcerning(scan)) {
+      flaggedUnpinned.push(scan);
+    }
+  });
   const fresh = [];
   due.forEach((url, i) => {
     const entry = pins.servers[url];
-    const outcome = recordRecheck(entry, { fingerprint: scans[i]?.fingerprint ?? null, scan: scans[i] });
+    const outcome = recordRecheck(entry, { fingerprint: recheckScans[i]?.fingerprint ?? null, scan: recheckScans[i] });
     if (outcome === 'changed') fresh.push([url, entry]);
   });
-  const message = fresh.length > 0 ? buildChangeMessage(fresh) : null;
-  for (const [, entry] of fresh) if (!entry.name) acceptChange(entry);
+  if (flagged.length > 0 || flaggedUnpinned.length > 0) messages.push(buildFirstReadMessage(flagged, flaggedUnpinned));
+  if (fresh.length > 0) messages.push(buildChangeMessage(fresh));
+  for (const [, entry] of [...flagged, ...fresh]) if (!entry.name) acceptChange(entry);
   try {
     savePins(pins, env);
   } catch {
     return null;
   }
-  return message === null ? null : { systemMessage: message };
+  return finish();
+}
+
+/** Said once, in a session that sends nothing, before any server from the config is read. */
+export function buildDiscoveryNotice(unseen) {
+  const lines = [];
+  lines.push(
+    'Lazaretto: from your next session, this plugin also reads the remote MCP servers already in your Claude Code config, not only ones added through Claude, so it can tell you when their tools change. Nothing has been sent yet.',
+  );
+  lines.push('');
+  for (const { url, name } of unseen.slice(0, 10)) lines.push(`  ${name ? `${name}  ` : ''}${url}`);
+  if (unseen.length > 10) lines.push(`  and ${unseen.length - 10} more`);
+  lines.push('');
+  lines.push(
+    'Each URL goes to lazaretto.dev, whose scanner connects to the server and lists its tools; a free key is requested if you do not have one. Servers with auth headers or OAuth settings, private hostnames, or a token in the URL are skipped. ' +
+      'To turn this off, set LAZARETTO_GUARD_DISCOVER=off in the env section of your Claude Code settings. For one server, run: lazaretto-guard unpin <url>',
+  );
+  return lines.join('\n');
+}
+
+/** What a session start says about configured servers that read flagged the first time. */
+export function buildFirstReadMessage(flagged, unpinned = []) {
+  const lines = [firstReadHeading([...flagged, ...unpinned]), ''];
+  for (const [url, entry] of flagged) lines.push(describeChange(url, entry));
+  for (const scan of unpinned) lines.push(describeServer(scan));
+  lines.push('');
+  lines.push(
+    flagged.length > 0 && flagged.every(([, e]) => e.name)
+      ? 'Claude Code will ask before the first call to one of its tools. Only our rule names are shown, never the text.'
+      : 'Only our rule names are shown, never the text. To read the tools yourself, run /mcp, or paste the URL at https://lazaretto.dev/check/mcp.',
+  );
+  return lines.join('\n');
 }
 
 /** What a session start says about servers whose tools changed. */
