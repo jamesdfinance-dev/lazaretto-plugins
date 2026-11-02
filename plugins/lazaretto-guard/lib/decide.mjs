@@ -19,7 +19,7 @@ import {
   isConcerning,
   describeServer,
 } from './mcp-scan.mjs';
-import { configuredServers } from './discover.mjs';
+import { configuredServers, knownServerUrls } from './discover.mjs';
 import {
   hasPins,
   loadPins,
@@ -28,6 +28,8 @@ import {
   pinFirstRead,
   unseenServers,
   dueForFirstRead,
+  markTried,
+  markUnreadable,
   dueForRecheck,
   MAX_RECHECK,
   RECHECK_MS,
@@ -361,7 +363,8 @@ async function atSessionStart(hookInput, settings, options) {
   } else {
     firstRead = dueForFirstRead(pins, unseen, nowDate);
   }
-  const due = dueForRecheck(pins, nowDate).slice(0, MAX_RECHECK - firstRead.length);
+  const known = settings.discover && Object.keys(pins.servers).length > 0 ? knownServerUrls({ env, cwd: hookInput.cwd }) : null;
+  const due = dueForRecheck(pins, nowDate, known).slice(0, MAX_RECHECK - firstRead.length);
 
   const finish = () => (messages.length === 0 ? null : { systemMessage: messages.join('\n\n') });
   try {
@@ -393,7 +396,7 @@ async function atSessionStart(hookInput, settings, options) {
   // Mark the attempt first: if the window closes mid-read, a slow server still
   // waits a day instead of holding up every session start until then.
   for (const url of due) pins.servers[url].checked_at = now;
-  for (const { url } of firstRead) pins.discovery.tried[url] = now;
+  for (const { url } of firstRead) markTried(pins, url, nowDate);
   try {
     savePins(pins, env);
   } catch {
@@ -402,7 +405,15 @@ async function atSessionStart(hookInput, settings, options) {
   const left = settings.sessionTimeoutMs - (Date.now() - started);
   if (left < 200) return finish();
   const read = (url, kind) =>
-    scanRemoteServer(url, { origin: settings.origin, key, timeoutMs: left, clientTag: options.clientTag, read: kind, fetchImpl });
+    scanRemoteServer(url, {
+      origin: settings.origin,
+      key,
+      timeoutMs: left,
+      clientTag: options.clientTag,
+      read: kind,
+      onUnreadable: kind === 'discover' ? () => markUnreadable(pins, url) : undefined,
+      fetchImpl,
+    });
   const [firstScans, recheckScans] = await Promise.all([
     Promise.all(firstRead.map(({ url }) => read(url, 'discover'))),
     Promise.all(due.map((url) => read(url, 'recheck'))),

@@ -36,6 +36,15 @@ export const MAX_RECHECK = 5;
 /** Most servers from the config read for the first time in one session start. */
 const MAX_FIRST_READ = 3;
 
+/**
+ * How long a configured server that cannot be read waits for another try. A
+ * server behind a login answers the same way every time, so each answer doubles
+ * the wait, up to a month. A try that fails because our own service was down
+ * says nothing about the server and waits the first step only.
+ */
+const MAX_TRY_WAIT_MS = 30 * RECHECK_MS;
+const tryWaitMs = (fails) => Math.min(RECHECK_MS * 2 ** fails, MAX_TRY_WAIT_MS);
+
 /** Most URLs kept as not to be read, so the file stays bounded. */
 const MAX_IGNORED = 200;
 
@@ -92,7 +101,11 @@ const isoOrNull = (v) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) 
 function readDiscovery(raw) {
   const tried = Object.create(null);
   if (raw?.tried && typeof raw.tried === 'object') {
-    for (const [url, at] of Object.entries(raw.tried)) if (isoOrNull(at)) tried[url] = at;
+    for (const [url, t] of Object.entries(raw.tried)) {
+      // 0.4.0 kept only the time.
+      const at = isoOrNull(typeof t === 'string' ? t : t?.at);
+      if (at) tried[url] = { at, fails: Number.isInteger(t?.fails) && t.fails > 0 ? Math.min(t.fails, 16) : 0 };
+    }
   }
   return {
     notice_at: isoOrNull(raw?.notice_at),
@@ -162,9 +175,16 @@ export function pinServer(pins, { url, name, fingerprint, now = new Date() }) {
   return pins;
 }
 
-/** The pinned servers due a re-read, least recently read first. */
-export function dueForRecheck(pins, now = new Date()) {
+/**
+ * The pinned servers due a re-read, least recently read first. `known` is every
+ * URL still in a Claude Code config, or null when that could not be told. A pin
+ * outside it is not read, so the URL of a server someone removed, or said no to
+ * at the ask, stops leaving the machine. The pin is kept: if the server comes
+ * back it is still compared with what was approved.
+ */
+export function dueForRecheck(pins, now = new Date(), known = null) {
   return Object.keys(pins.servers)
+    .filter((url) => known === null || known.has(url))
     .filter((url) => now.getTime() - Date.parse(pins.servers[url].checked_at) >= RECHECK_MS || Number.isNaN(Date.parse(pins.servers[url].checked_at)))
     .sort((a, b) => pins.servers[a].checked_at.localeCompare(pins.servers[b].checked_at))
     .slice(0, MAX_RECHECK);
@@ -175,13 +195,22 @@ export function unseenServers(pins, configured) {
   return configured.filter((s) => !(s.url in pins.servers) && !pins.discovery.ignored.includes(s.url));
 }
 
-/** Which of those to read now. One that could not be read waits a day, like any other. */
+/** Which of those to read now, leaving out any still waiting after a failed try. */
 export function dueForFirstRead(pins, unseen, now = new Date()) {
   const { tried } = pins.discovery;
-  for (const [url, at] of Object.entries(tried)) {
-    if (now.getTime() - Date.parse(at) >= RECHECK_MS) delete tried[url];
-  }
-  return unseen.filter((s) => !(s.url in tried)).slice(0, MAX_FIRST_READ);
+  const waiting = (url) => url in tried && now.getTime() - Date.parse(tried[url].at) < tryWaitMs(tried[url].fails);
+  return unseen.filter((s) => !waiting(s.url)).slice(0, MAX_FIRST_READ);
+}
+
+/** Note a try before it is made, so a read cut off by the window still counts. */
+export function markTried(pins, url, now = new Date()) {
+  pins.discovery.tried[url] = { at: now.toISOString(), fails: pins.discovery.tried[url]?.fails ?? 0 };
+}
+
+/** The service reached a verdict: this server cannot be read. Wait longer next time. */
+export function markUnreadable(pins, url) {
+  const t = pins.discovery.tried[url];
+  if (t) t.fails = Math.min(t.fails + 1, 16);
 }
 
 /** Never read this server from the config again, unless it is added through Claude. */
