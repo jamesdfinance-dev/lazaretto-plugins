@@ -189,9 +189,11 @@ export async function obtainKey({ env = process.env, origin, timeoutMs, clientTa
  * an error verdict, a timeout). Null is silence, never a clear. `fingerprint`
  * is null when the report has none worth pinning (an older API, a partial read).
  * `read` says why a session start is reading it (`recheck` or `discover`), so
- * the service can count those apart from a server being added.
+ * the service can count those apart from a server being added. `onUnreadable`
+ * is told when the service reached a verdict that this server cannot be read,
+ * as opposed to the service itself being down or out of reads.
  */
-export async function scanRemoteServer(url, { origin, key, timeoutMs, clientTag, read, fetchImpl = fetch }) {
+export async function scanRemoteServer(url, { origin, key, timeoutMs, clientTag, read, onUnreadable, fetchImpl = fetch }) {
   try {
     const res = await fetchImpl(`${origin}/v1/scan`, {
       method: 'POST',
@@ -205,9 +207,10 @@ export async function scanRemoteServer(url, { origin, key, timeoutMs, clientTag,
       body: JSON.stringify({ target: { type: 'mcp_server', ref: url }, depth: 'full' }),
       signal: AbortSignal.timeout(Math.max(100, timeoutMs)),
     });
-    if (!res.ok) return null;
+    if (!res.ok && res.status !== 422) return null;
     const report = await res.json();
-    if (!report || typeof report.verdict !== 'string' || report.verdict === 'error') return null;
+    if (report?.verdict === 'error') onUnreadable?.();
+    if (!res.ok || !report || typeof report.verdict !== 'string' || report.verdict === 'error') return null;
     return {
       url,
       verdict: report.verdict,

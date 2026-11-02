@@ -15,7 +15,7 @@
  */
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { shareableUrl } from './mcp-scan.mjs';
 import { cleanServerName } from './pins.mjs';
 
@@ -24,6 +24,9 @@ const MAX_CONFIG_BYTES = 20_000_000;
 
 /** Most servers taken from the config, so a hostile `.mcp.json` stays bounded. */
 const MAX_CONFIGURED = 50;
+
+/** Most projects looked through for a server that may have been removed. */
+const MAX_PROJECTS = 500;
 
 /** Fields that mean an entry authenticates. Their presence means skip. */
 const CREDENTIAL_FIELDS = ['headers', 'headersHelper', 'oauth', 'env'];
@@ -71,10 +74,58 @@ function readEntry(name, entry) {
 
 const own = (o, k) => (o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
 
+/** A directory and every directory above it. */
+function upFrom(dir) {
+  const dirs = [dir];
+  while (dirname(dirs.at(-1)) !== dirs.at(-1)) dirs.push(dirname(dirs.at(-1)));
+  return dirs;
+}
+
+function realOrSame(dir) {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+/**
+ * The folder Claude Code files this directory's local servers under: the root
+ * of the git repository it is in, and for a git worktree the main checkout's
+ * root. Outside a repository, there is none and the directory itself is used.
+ */
+function gitProjectRoot(dir) {
+  for (const candidate of upFrom(dir)) {
+    let stat;
+    try {
+      stat = statSync(join(candidate, '.git'));
+    } catch {
+      continue;
+    }
+    if (stat.isDirectory()) return candidate;
+    try {
+      const pointer = readFileSync(join(candidate, '.git'), 'utf8').match(/^gitdir:\s*(.+?)\s*$/m)?.[1];
+      const main = pointer ? resolve(candidate, pointer).match(/^(.+)\/\.git\/worktrees\/[^/]+$/)?.[1] : null;
+      return main ?? candidate;
+    } catch {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/** Every spelling Claude Code may have filed this directory's project entry under. */
+function projectKeys(cwd) {
+  const real = realOrSame(cwd);
+  const root = gitProjectRoot(real);
+  return [...new Set([cwd, real, ...(root ? [root, realOrSame(root)] : [])])];
+}
+
 /**
  * The remote servers Claude Code would connect in this directory, as
  * `{ url, name }`: user scope and local scope from `.claude.json`, project
- * scope from `.mcp.json`, leaving out any the person disabled.
+ * scope from `.mcp.json` here or in any folder above, leaving out any the
+ * person disabled.
  */
 export function configuredServers({ env = process.env, cwd } = {}) {
   const doc = readJson(claudeConfigPath(env));
@@ -89,23 +140,51 @@ export function configuredServers({ env = process.env, cwd } = {}) {
   };
   take(own(doc, 'mcpServers'));
   if (typeof cwd === 'string' && cwd !== '') {
-    const dirs = [cwd];
-    try {
-      const real = realpathSync(cwd);
-      if (real !== cwd) dirs.push(real);
-    } catch {
-      /* a directory that cannot be resolved is read as given */
-    }
-    // Claude Code may have filed this project under either spelling of the path,
-    // so a server disabled under one still counts when reading the file once.
+    // A server disabled under any spelling of the project still counts when
+    // reading the files.
     const disabled = [];
-    for (const dir of dirs) {
-      const project = own(own(doc, 'projects'), dir);
+    for (const key of projectKeys(cwd)) {
+      const project = own(own(doc, 'projects'), key);
       take(own(project, 'mcpServers'));
       const off = own(project, 'disabledMcpjsonServers');
       if (Array.isArray(off)) disabled.push(...off);
     }
-    take(own(readJson(join(cwd, '.mcp.json')), 'mcpServers'), disabled);
+    for (const dir of upFrom(realOrSame(cwd))) take(own(readJson(join(dir, '.mcp.json')), 'mcpServers'), disabled);
   }
   return [...found.values()].slice(0, MAX_CONFIGURED);
+}
+
+/**
+ * Every server URL Claude Code knows about anywhere: all scopes, every project
+ * it has opened, and this directory's `.mcp.json` files. A pin that is in none
+ * of these was removed, or was never added because the person said no at the
+ * ask. Credentials do not matter here and nothing from this leaves the machine:
+ * it is only compared with URLs already pinned. Null when the config cannot be
+ * read, so a broken file never reads as "everything was removed".
+ */
+export function knownServerUrls({ env = process.env, cwd } = {}) {
+  const doc = readJson(claudeConfigPath(env));
+  if (doc === null) return null;
+  const urls = new Set();
+  const take = (entries) => {
+    if (!entries || typeof entries !== 'object') return;
+    for (const entry of Object.values(entries)) {
+      try {
+        urls.add(new URL(entry.url).toString());
+      } catch {
+        /* no usable URL in this entry */
+      }
+    }
+  };
+  take(own(doc, 'mcpServers'));
+  const dirs = typeof cwd === 'string' && cwd !== '' ? upFrom(realOrSame(cwd)) : [];
+  const projects = own(doc, 'projects');
+  if (projects && typeof projects === 'object') {
+    for (const [dir, project] of Object.entries(projects).slice(0, MAX_PROJECTS)) {
+      take(own(project, 'mcpServers'));
+      dirs.push(dir);
+    }
+  }
+  for (const dir of new Set(dirs)) take(own(readJson(join(dir, '.mcp.json')), 'mcpServers'));
+  return urls;
 }

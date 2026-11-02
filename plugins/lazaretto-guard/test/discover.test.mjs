@@ -57,7 +57,7 @@ async function startApi(state) {
         res.writeHead(502).end('bad gateway');
         return;
       }
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(state.report));
+      res.writeHead(state.status ?? 200, { 'content-type': 'application/json' }).end(JSON.stringify(state.report));
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -78,7 +78,7 @@ const toolCall = (tool_name) => ({ hook_event_name: 'PreToolUse', tool_name, too
 
 function ageTried(env) {
   const pins = loadPins(env);
-  for (const url of Object.keys(pins.discovery.tried)) pins.discovery.tried[url] = new Date(Date.now() - RECHECK_MS - 1000).toISOString();
+  for (const url of Object.keys(pins.discovery.tried)) pins.discovery.tried[url].at = new Date(Date.now() - RECHECK_MS - 1000).toISOString();
   savePins(pins, env);
 }
 
@@ -155,6 +155,38 @@ test('a token in the URL path is never sent, on any path', () => {
   }
 });
 
+test('from a subdirectory or a git worktree, local servers are found under the repository root', () => {
+  const { env } = machine('http://x');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'lz-repo-')));
+  const repo = join(base, 'repo');
+  mkdirSync(join(repo, 'src', 'deep'), { recursive: true });
+  spawnSync('git', ['init', '-q'], { cwd: repo });
+  spawnSync('git', ['-c', 'user.email=t@e.st', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'x'], { cwd: repo });
+  spawnSync('git', ['worktree', 'add', '-q', join(base, 'wt'), '-b', 'wt'], { cwd: repo });
+  writeFileSync(join(env.CLAUDE_CONFIG_DIR, '.claude.json'), JSON.stringify({ projects: { [repo]: { mcpServers: { here: http(URL_A) } } } }));
+  for (const cwd of [repo, join(repo, 'src', 'deep'), join(base, 'wt')]) {
+    assert.deepEqual(configuredServers({ env, cwd }), [{ url: URL_A, name: 'here' }], cwd);
+  }
+});
+
+test('a .mcp.json in a folder above counts, and one beside it does not', () => {
+  const { env } = machine('http://x');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'lz-up-')));
+  mkdirSync(join(base, 'a', 'b'), { recursive: true });
+  mkdirSync(join(base, 'c'));
+  writeFileSync(join(base, 'a', '.mcp.json'), JSON.stringify({ mcpServers: { above: http(URL_A) } }));
+  writeFileSync(join(base, 'c', '.mcp.json'), JSON.stringify({ mcpServers: { beside: http(URL_B) } }));
+  assert.deepEqual(configuredServers({ env, cwd: join(base, 'a', 'b') }), [{ url: URL_A, name: 'above' }]);
+});
+
+test('a parent project entry does not apply to a folder outside any repository', () => {
+  const { env } = machine('http://x');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'lz-norepo-')));
+  mkdirSync(join(base, 'child'));
+  writeFileSync(join(env.CLAUDE_CONFIG_DIR, '.claude.json'), JSON.stringify({ projects: { [base]: { mcpServers: { parent: http(URL_A) } } } }));
+  assert.deepEqual(configuredServers({ env, cwd: join(base, 'child') }), []);
+});
+
 test('a missing or broken config is no servers', () => {
   const { env, cwd } = machine('http://x');
   writeFileSync(join(env.CLAUDE_CONFIG_DIR, '.claude.json'), '{not json');
@@ -175,6 +207,21 @@ test('what `claude mcp add` really writes, at each scope, is what is read', { sk
   add('--scope', 'project', '--transport', 'http', 'prj_srv', 'https://project.example.com/mcp');
   add('--transport', 'http', 'hdr_srv', 'https://hdr.example.com/mcp', '--header', 'Authorization: Bearer fake_token');
   assert.deepEqual(configuredServers({ env, cwd: real }).map((s) => s.name).sort(), ['loc_srv', 'prj_srv', 'usr_srv']);
+});
+
+test('what `claude mcp add` writes inside a repository is found from a subdirectory and a worktree', { skip: spawnSync('claude', ['--version']).status !== 0 }, () => {
+  const { env } = machine('http://x');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'lz-real-')));
+  const repo = join(base, 'repo');
+  mkdirSync(join(repo, 'sub'), { recursive: true });
+  spawnSync('git', ['init', '-q'], { cwd: repo });
+  spawnSync('git', ['-c', 'user.email=t@e.st', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'x'], { cwd: repo });
+  spawnSync('git', ['worktree', 'add', '-q', join(base, 'wt'), '-b', 'wt'], { cwd: repo });
+  const r = spawnSync('claude', ['mcp', 'add', '--transport', 'http', 'sub_srv', 'https://sub.example.com/mcp'], { cwd: join(repo, 'sub'), env: { ...process.env, ...env }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  for (const cwd of [join(repo, 'sub'), repo, join(base, 'wt')]) {
+    assert.deepEqual(configuredServers({ env, cwd }).map((s) => s.name), ['sub_srv'], cwd);
+  }
 });
 
 // ---------------------------------------------------------- notice, then read
@@ -289,6 +336,118 @@ test('a server that cannot be read stays quiet, unpinned, and waits a day', asyn
   }
 });
 
+test('a server the service says it cannot read waits longer each time, up to a month', async () => {
+  const state = { report: { verdict: 'error' }, status: 422 };
+  const api = await startApi(state);
+  try {
+    const m = machine(api.origin, { mcpServers: { behind_login: http(URL_A) } }, { LAZARETTO_API_KEY: 'lz_env' });
+    await decide(m.start, { settings: m.settings });
+    const back = (days) => {
+      const pins = loadPins(m.env);
+      pins.discovery.tried[URL_A].at = new Date(Date.now() - days * RECHECK_MS - 1000).toISOString();
+      savePins(pins, m.env);
+    };
+    assert.equal(await decide(m.start, { settings: m.settings }), null);
+    assert.equal(api.seen.scan.length, 1);
+    assert.equal(loadPins(m.env).discovery.tried[URL_A].fails, 1);
+
+    back(1);
+    await decide(m.start, { settings: m.settings });
+    assert.equal(api.seen.scan.length, 1, 'one day is not enough after one failure');
+    back(2);
+    await decide(m.start, { settings: m.settings });
+    assert.equal(api.seen.scan.length, 2);
+    assert.equal(loadPins(m.env).discovery.tried[URL_A].fails, 2);
+
+    const pins = loadPins(m.env);
+    pins.discovery.tried[URL_A].fails = 16;
+    savePins(pins, m.env);
+    back(29);
+    await decide(m.start, { settings: m.settings });
+    assert.equal(api.seen.scan.length, 2);
+    back(30);
+    await decide(m.start, { settings: m.settings });
+    assert.equal(api.seen.scan.length, 3, 'never more than a month');
+    assert.deepEqual(Object.keys(loadPins(m.env).servers), []);
+  } finally {
+    await api.close();
+  }
+});
+
+test('our own service being down says nothing about the server, so the wait stays a day', async () => {
+  const state = { report: clear, down: true };
+  const api = await startApi(state);
+  try {
+    const m = machine(api.origin, { mcpServers: { docs: http(URL_A) } }, { LAZARETTO_API_KEY: 'lz_env' });
+    await decide(m.start, { settings: m.settings });
+    await decide(m.start, { settings: m.settings });
+    assert.equal(loadPins(m.env).discovery.tried[URL_A].fails, 0);
+  } finally {
+    await api.close();
+  }
+});
+
+test('a try saved by 0.4.0, as a bare time, still counts', async () => {
+  const api = await startApi({ report: clear });
+  try {
+    const m = machine(api.origin, { mcpServers: { docs: http(URL_A) } }, { LAZARETTO_API_KEY: 'lz_env' });
+    mkdirSync(join(m.env.XDG_CONFIG_HOME, 'lazaretto'), { recursive: true });
+    writeFileSync(pinsPath(m.env), JSON.stringify({ version: 1, servers: {}, discovery: { notice_at: new Date().toISOString(), tried: { [URL_A]: new Date().toISOString() } } }));
+    assert.equal(await decide(m.start, { settings: m.settings }), null);
+    assert.equal(api.seen.scan.length, 0);
+  } finally {
+    await api.close();
+  }
+});
+
+test('a pinned server no longer in any config is not read, and is compared again if it comes back', async () => {
+  const state = { report: clear };
+  const api = await startApi(state);
+  try {
+    const CHANGED = { sha256: sha('other'), tools: { search: sha('search'), extra: sha('extra') } };
+    const m = machine(api.origin, { mcpServers: { docs: http(URL_A) } }, { LAZARETTO_API_KEY: 'lz_env' });
+    await decide(m.start, { settings: m.settings });
+    await decide(m.start, { settings: m.settings });
+    assert.equal(api.seen.scan.length, 1);
+    const age = () => {
+      const pins = loadPins(m.env);
+      pins.servers[URL_A].checked_at = new Date(Date.now() - RECHECK_MS - 1000).toISOString();
+      savePins(pins, m.env);
+    };
+
+    // Removed, the way `claude mcp remove` leaves the file.
+    writeFileSync(join(m.env.CLAUDE_CONFIG_DIR, '.claude.json'), JSON.stringify({ mcpServers: {} }));
+    age();
+    assert.equal(await decide(m.start, { settings: m.settings }), null);
+    assert.equal(api.seen.scan.length, 1, 'the URL of a removed server is not sent');
+    assert.equal(loadPins(m.env).servers[URL_A].sha256, FP.sha256, 'the pin is kept');
+
+    // Back, with different tools: a change, not a fresh approval.
+    writeFileSync(join(m.env.CLAUDE_CONFIG_DIR, '.claude.json'), JSON.stringify({ mcpServers: { docs: http(URL_A) } }));
+    state.report = { ...clear, tool_fingerprint: CHANGED };
+    const back = await decide(m.start, { settings: m.settings });
+    assert.equal(api.seen.scan.at(-1).read, 'recheck');
+    assert.match(back.systemMessage, /added: extra/);
+  } finally {
+    await api.close();
+  }
+});
+
+test('a broken config never reads as every server having been removed', async () => {
+  const api = await startApi({ report: clear });
+  try {
+    const m = machine(api.origin, { mcpServers: {} }, { LAZARETTO_API_KEY: 'lz_env' });
+    const pins = loadPins(m.env);
+    pins.servers[URL_A] = { name: 'docs', ...FP, pinned_at: new Date(0).toISOString(), checked_at: new Date(0).toISOString() };
+    savePins(pins, m.env);
+    writeFileSync(join(m.env.CLAUDE_CONFIG_DIR, '.claude.json'), '{not json');
+    await decide(m.start, { settings: m.settings });
+    assert.deepEqual(api.seen.scan.map((s) => [s.ref, s.read]), [[URL_A, 'recheck']]);
+  } finally {
+    await api.close();
+  }
+});
+
 test('a refused key is not asked for again the same day', async () => {
   const api = await startApi({ report: clear, noTrial: true });
   try {
@@ -307,6 +466,7 @@ test('one session start reads at most five, first reads included, and re-reads a
   const api = await startApi({ report: clear });
   try {
     const servers = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`s${i}`, http(`https://s${i}.example.com/mcp`)]));
+    for (let i = 0; i < 4; i += 1) servers[`p${i}`] = http(`https://p${i}.example.com/mcp`);
     const m = machine(api.origin, { mcpServers: servers }, { LAZARETTO_API_KEY: 'lz_env' });
     const pins = loadPins(m.env);
     for (let i = 0; i < 4; i += 1) {
