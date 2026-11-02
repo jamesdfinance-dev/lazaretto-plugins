@@ -28,8 +28,11 @@ const MAX_CONFIGURED = 50;
 /** Fields that mean an entry authenticates. Their presence means skip. */
 const CREDENTIAL_FIELDS = ['headers', 'headersHelper', 'oauth', 'env'];
 
-/** Host labels that only mean something inside a private network. */
-const PRIVATE_LABELS = new Set(['local', 'localhost', 'internal', 'intranet', 'corp', 'lan', 'vpn', 'home', 'test', 'invalid']);
+/** Endings that never resolve on the public internet. */
+const PRIVATE_ENDINGS = new Set(['local', 'localhost', 'internal', 'intranet', 'corp', 'lan', 'home', 'test', 'invalid']);
+
+/** Labels that mark a private network anywhere in a name, as in mcp.internal.acme.com. */
+const PRIVATE_LABELS = new Set(['internal', 'intranet', 'corp', 'vpn']);
 
 /** Where Claude Code keeps user and local scope MCP servers. */
 export function claudeConfigPath(env = process.env) {
@@ -46,11 +49,12 @@ function readJson(file) {
   }
 }
 
-/** True for an IP literal, a single-label name, or a name with a private label anywhere in it. */
+/** True for an IP literal, a single-label name, a private ending, or a private label anywhere. */
 export function isPrivateHost(hostname) {
   const host = hostname.toLowerCase();
   if (!host.includes('.') || host.startsWith('[') || /^[\d.]+$/.test(host)) return true;
-  return host.split('.').some((label) => PRIVATE_LABELS.has(label));
+  const labels = host.split('.');
+  return PRIVATE_ENDINGS.has(labels.at(-1)) || labels.some((label) => PRIVATE_LABELS.has(label));
 }
 
 /** The server one config entry names, as `{ url, name }`, or null when it should not be sent. */
