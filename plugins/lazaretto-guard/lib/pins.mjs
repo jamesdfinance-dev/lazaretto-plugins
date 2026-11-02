@@ -30,6 +30,12 @@ export const RECHECK_MS = 24 * 60 * 60 * 1000;
 /** Most servers kept, so the file and a session start stay bounded. */
 const MAX_PINS = 50;
 
+/** Most attempt records kept for things found in the config. */
+const MAX_SEEN = 300;
+
+/** Longest wait before trying a server in the config again. */
+const MAX_RETRY_MS = 30 * RECHECK_MS;
+
 /** Most servers re-read in one session start. The rest wait for the next one. */
 export const MAX_RECHECK = 5;
 
@@ -78,7 +84,7 @@ export function cleanServerName(name) {
 
 /** The pins on disk. A missing or unreadable file is no pins. */
 export function loadPins(env = process.env) {
-  const empty = { servers: Object.create(null) };
+  const empty = { servers: Object.create(null), seen: Object.create(null) };
   let doc;
   try {
     doc = JSON.parse(readFileSync(pinsPath(env), 'utf8'));
@@ -98,9 +104,14 @@ export function loadPins(env = process.env) {
     };
     const to = entry.change ? readFingerprint(entry.change.to) : null;
     if (to !== null) kept.change = { ...entry.change, to };
+    if (entry.flag && typeof entry.flag.verdict === 'string') kept.flag = entry.flag;
     servers[url] = kept;
   }
-  return { servers };
+  const seen = Object.create(null);
+  for (const [key, record] of Object.entries(doc.seen && typeof doc.seen === 'object' ? doc.seen : {})) {
+    if (record && typeof record.checked_at === 'string') seen[key] = record;
+  }
+  return { servers, seen };
 }
 
 /** True when there is a pin file at all. Cheap: the hook asks this on every MCP tool call. */
@@ -113,10 +124,38 @@ export function savePins(pins, env = process.env) {
   const file = pinsPath(env);
   mkdirSync(configDir(env), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify({ version: 1, servers: pins.servers }, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(tmp, `${JSON.stringify({ version: 1, servers: pins.servers, seen: newestSeen(pins.seen) }, null, 2)}\n`, { mode: 0o600 });
   chmodSync(tmp, 0o600);
   // A rename is atomic, so a hook killed mid-write leaves the old file, never half a new one.
   renameSync(tmp, file);
+}
+
+/** The records worth keeping, so the file stays bounded. */
+function newestSeen(seen) {
+  const entries = Object.entries(seen ?? {}).sort(([, a], [, b]) => b.checked_at.localeCompare(a.checked_at));
+  return Object.fromEntries(entries.slice(0, MAX_SEEN));
+}
+
+/**
+ * Note one more attempt at something found in the config: a server with no
+ * complete read yet, or a package checked. `told` stays once set.
+ */
+export function noteAttempt(pins, key, now = new Date()) {
+  const before = pins.seen[key];
+  pins.seen[key] = { ...before, checked_at: now.toISOString(), tries: (before?.tries ?? 0) + 1 };
+  return pins.seen[key];
+}
+
+/**
+ * True when a server found in the config is due another try. A server that will
+ * not list its tools to us (it needs a sign-in, usually) is what this is for:
+ * the wait doubles from a day up to a month, so it stops costing session starts.
+ */
+export function retryDue(record, now = new Date()) {
+  if (!record) return true;
+  const wait = Math.min(MAX_RETRY_MS, RECHECK_MS * 2 ** Math.max(0, (record.tries ?? 1) - 1));
+  const last = Date.parse(record.checked_at);
+  return Number.isNaN(last) || now.getTime() - last >= wait;
 }
 
 /** Pin what a server advertises now. A re-add replaces the old pin and any pending change. */
@@ -170,15 +209,24 @@ export function recordRecheck(entry, { fingerprint, scan = null, now = new Date(
   if (scan && (scan.verdict === 'flagged' || scan.verdict === 'malicious')) {
     entry.change.verdict = scan.verdict;
     entry.change.risk = scan.risk;
-    // Our rule text and where it fired. Never the snippet: that is the server's text.
-    entry.change.findings = scan.findings.slice(0, 5).map((f) => ({
-      rule_id: typeof f.rule_id === 'string' ? f.rule_id : 'finding',
-      severity: typeof f.severity === 'string' ? f.severity : undefined,
-      description: typeof f.description === 'string' ? f.description.slice(0, 160) : undefined,
-      evidence: { file: f.evidence?.file, line: f.evidence?.line },
-    }));
+    entry.change.findings = keptFindings(scan);
   }
   return 'changed';
+}
+
+/** Our rule text and where it fired. Never the snippet: that is the server's text. */
+function keptFindings(scan) {
+  return scan.findings.slice(0, 5).map((f) => ({
+    rule_id: typeof f.rule_id === 'string' ? f.rule_id : 'finding',
+    severity: typeof f.severity === 'string' ? f.severity : undefined,
+    description: typeof f.description === 'string' ? f.description.slice(0, 160) : undefined,
+    evidence: { file: f.evidence?.file, line: f.evidence?.line },
+  }));
+}
+
+/** Keep a concerning first read of a server found in the config, to ask about at its first call. */
+export function flagServer(entry, scan, now = new Date()) {
+  entry.flag = { verdict: scan.verdict, risk: scan.risk, findings: keptFindings(scan), seen_at: now.toISOString() };
 }
 
 /** The new tools become the pin. Called once the person has been told. */
@@ -204,6 +252,12 @@ export function pendingForTool(pins, toolName) {
   return Object.entries(pins.servers).filter(([, e]) => e.change && e.name && toolName.startsWith(toolPrefix(e.name)));
 }
 
+/** The pinned servers read as concerning and not yet asked about, behind this tool call. */
+export function flaggedForTool(pins, toolName) {
+  if (typeof toolName !== 'string' || !toolName.startsWith('mcp__')) return [];
+  return Object.entries(pins.servers).filter(([, e]) => e.flag && e.name && toolName.startsWith(toolPrefix(e.name)));
+}
+
 function nameList(label, names) {
   if (!Array.isArray(names) || names.length === 0) return null;
   const shown = names.slice(0, MAX_NAMES).join(', ');
@@ -220,10 +274,20 @@ export function describeChange(url, entry) {
   if (c.instructions_changed) lines.push("    the server's instructions changed");
   if (c.verdict) {
     lines.push(`    the new tools read ${c.verdict}${c.risk ? `, risk ${c.risk}` : ''}:`);
-    for (const f of c.findings ?? []) {
-      const where = [f.evidence?.file, f.evidence?.line ? `line ${f.evidence.line}` : null].filter(Boolean).join(', ');
-      lines.push(`      ${f.rule_id}${f.severity ? ` [${f.severity}]` : ''}${where ? ` (${where})` : ''}${f.description ? `: ${f.description}` : ''}`);
-    }
+    lines.push(...findingLines(c.findings));
   }
   return lines.join('\n');
+}
+
+function findingLines(findings) {
+  return (findings ?? []).map((f) => {
+    const where = [f.evidence?.file, f.evidence?.line ? `line ${f.evidence.line}` : null].filter(Boolean).join(', ');
+    return `      ${f.rule_id}${f.severity ? ` [${f.severity}]` : ''}${where ? ` (${where})` : ''}${f.description ? `: ${f.description}` : ''}`;
+  });
+}
+
+/** The lines naming what a first read of one server found. Our rule text only. */
+export function describeFlag(url, entry) {
+  const f = entry.flag;
+  return [`  ${entry.name ? `${entry.name}  ` : ''}${url}  read ${f.verdict}${f.risk ? `, risk ${f.risk}` : ''}:`, ...findingLines(f.findings)].join('\n');
 }

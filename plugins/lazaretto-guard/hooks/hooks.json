@@ -1,5 +1,5 @@
 {
-  "description": "Before an install runs, check pinned package versions against published malicious-package advisories, and read the tools a remote MCP server advertises before it is connected, keeping a fingerprint of them. Once a day at session start, re-read those servers, and ask before the first call to one whose tools changed. Ask rather than block on anything found.",
+  "description": "Before an install runs, check pinned package versions against published malicious-package advisories, and read the tools a remote MCP server advertises before it is connected, keeping a fingerprint of them. At session start, read servers already in the config that have no pin yet, re-read pinned ones once a day, and ask before the first call to one whose tools changed or whose first read found something. Ask rather than block on anything found.",
   "hooks": {
     "PreToolUse": [
       {

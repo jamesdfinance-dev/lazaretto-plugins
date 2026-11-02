@@ -139,7 +139,7 @@ async function main(argv) {
     }
     for (const url of urls) {
       const e = pins.servers[url];
-      const pending = e.change ? '  changed, not yet asked about' : '';
+      const pending = `${e.change ? '  changed, not yet asked about' : ''}${e.flag ? `  read ${e.flag.verdict}, not yet asked about` : ''}`;
       out(`${e.name ?? '(no name)'}  ${url}  ${Object.keys(e.tools).length} tools  pinned ${e.pinned_at.slice(0, 10)}  read ${e.checked_at.slice(0, 10)}${pending}`);
     }
     out(`\n${pinsPath(process.env)}`);

@@ -6,8 +6,10 @@
  * Claude Code sends for four commands and checks what comes back. Then the
  * pinned demo: the add pins the demo server's tools, the pin is altered the
  * way a server changing its tools would look, and a session start and a call
- * to one of its tools must name the change. Labelled `+ci`, so the service
- * never counts this as someone using the plugin.
+ * to one of its tools must name the change. Then a config holding the demo, a
+ * clean server and a local server at a listed version, none of which any tool
+ * call ever showed the hook. Labelled `+ci`, so the service never counts this as
+ * someone using the plugin.
  *
  *   node plugins/lazaretto-guard/test/live/live-check.mjs
  */
@@ -47,13 +49,13 @@ if (!key) {
 if (process.env.GITHUB_ACTIONS) console.log(`::add-mask::${key}`);
 
 /** Run the hook once with one input. `got` is ask, message (a session start's systemMessage) or silent. */
-function runHook(input, configHome) {
+function runHook(input, configHome, home = configHome) {
   const started = Date.now();
   const r = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(input),
     encoding: 'utf8',
     timeout: 9000,
-    env: { PATH: process.env.PATH, XDG_CONFIG_HOME: configHome, LAZARETTO_API_KEY: key, LAZARETTO_GUARD_API: ORIGIN, LAZARETTO_GUARD_CLIENT_SUFFIX: SUFFIX },
+    env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: configHome, LAZARETTO_API_KEY: key, LAZARETTO_GUARD_API: ORIGIN, LAZARETTO_GUARD_CLIENT_SUFFIX: SUFFIX },
   });
   const ms = Date.now() - started;
   let got = 'silent';
@@ -134,6 +136,27 @@ if (pinned) {
 } else {
   rows.push('| pinned demo: change, ask, re-read | not run | no pin | | FAIL |');
 }
+
+// Servers already in the config: added in a terminal, say, so no tool call ran.
+const configHome = mkdtempSync(join(tmpdir(), 'guard-config-'));
+const userHome = mkdtempSync(join(tmpdir(), 'guard-home-'));
+writeFileSync(
+  join(userHome, '.claude.json'),
+  JSON.stringify({
+    mcpServers: {
+      'lazaretto-demo': { type: 'http', url: 'https://lazaretto.dev/demo/mcp' },
+      lazaretto: { type: 'http', url: 'https://lazaretto.dev/mcp' },
+      listed: { command: 'npx', args: ['-y', 'chalk@5.6.1'] },
+    },
+  }),
+);
+const session = { hook_event_name: 'SessionStart', source: 'startup', cwd: userHome };
+const found = runHook(session, configHome, userHome);
+record('config: a session start reads what no tool call showed it', 'message', 'mcp.directive_block', found, found.text.includes('MAL-2025-46969') && found.text.includes('(lazaretto)') && !found.text.includes('<IMPORTANT>'));
+const demoTool = { hook_event_name: 'PreToolUse', tool_name: 'mcp__lazaretto-demo__demo_echo', tool_input: {} };
+record('config: the first call to the flagged server asks', 'ask', 'mcp.directive_block', runHook(demoTool, configHome, userHome));
+record('config: asked once, the next call is silent', 'silent', null, runHook(demoTool, configHome, userHome));
+record('config: told once, the next session start is silent', 'silent', null, runHook(session, configHome, userHome));
 
 const report = rows.join('\n');
 console.log(report);

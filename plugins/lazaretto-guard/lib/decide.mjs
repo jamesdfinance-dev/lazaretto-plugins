@@ -29,7 +29,15 @@ import {
   acceptChange,
   pendingForTool,
   describeChange,
+  noteAttempt,
+  retryDue,
+  flagServer,
+  flaggedForTool,
+  describeFlag,
+  MAX_RECHECK,
+  RECHECK_MS,
 } from './pins.mjs';
+import { configuredServers } from './configured.mjs';
 
 /** Where a person goes to read the advisory behind an id, for themselves. */
 const ADVISORY_URL = 'https://osv.dev/vulnerability/';
@@ -126,11 +134,10 @@ export function needsLongBudget(hookInput, settings) {
   return remoteServersForToolInput(hookInput?.tool_name, hookInput?.tool_input).length > 0;
 }
 
-/** True when this input is a session start that has pinned servers to re-read. */
-export function isPinRecheck(hookInput, settings) {
+/** True when this input is a session start, which may read the config's servers and re-read pins. */
+export function isSessionRead(hookInput, settings) {
   if (hookInput?.hook_event_name !== 'SessionStart') return false;
-  if (settings && (settings.disabled || settings.offline || !settings.readServers)) return false;
-  return hasPins(settings?.env ?? process.env);
+  return !(settings && (settings.disabled || settings.offline));
 }
 
 /** The ask shown at the first use of a server whose tools changed since it was pinned. */
@@ -150,6 +157,19 @@ export function buildChangeReason(changed) {
       'The new tools are now the pinned version, so Lazaretto will not ask about this change again.',
   );
   return lines.join('\n');
+}
+
+/** The ask shown at the first use of a server in the config whose first read found something. */
+export function buildFlagReason(flagged) {
+  return [
+    flagged.length === 1
+      ? 'Lazaretto read the tools of this MCP server, which was already in your config, and found something worth a look:'
+      : `Lazaretto read the tools of these ${flagged.length} MCP servers, which were already in your config, and found something worth a look:`,
+    '',
+    ...flagged.map(([url, entry]) => describeFlag(url, entry)),
+    '',
+    'These are signals from reading the text the server hands an agent, not a verdict on whoever runs it. Lazaretto asks about this once.',
+  ].join('\n');
 }
 
 /** The text shown when a server's own tool text looks wrong. */
@@ -243,7 +263,7 @@ export async function decide(hookInput, options = {}) {
     const settings = options.settings ?? settingsFromEnv(options.env ?? process.env);
     if (settings.disabled) return null;
 
-    if (hookInput?.hook_event_name === 'SessionStart') return await recheckPins(settings, options);
+    if (hookInput?.hook_event_name === 'SessionStart') return await atSessionStart(hookInput, settings, options);
 
     const toolName = hookInput?.tool_name;
     if (typeof toolName === 'string' && toolName.startsWith('mcp__')) return askAboutChanges(toolName, settings);
@@ -288,9 +308,11 @@ function askAboutChanges(toolName, settings) {
   if (!hasPins(env)) return null;
   const pins = loadPins(env);
   const changed = pendingForTool(pins, toolName);
-  if (changed.length === 0) return null;
-  const reason = buildChangeReason(changed);
+  const flagged = flaggedForTool(pins, toolName);
+  if (changed.length === 0 && flagged.length === 0) return null;
+  const reason = [...(flagged.length > 0 ? [buildFlagReason(flagged)] : []), ...(changed.length > 0 ? [buildChangeReason(changed)] : [])].join('\n\n');
   for (const [, entry] of changed) acceptChange(entry);
+  for (const [, entry] of flagged) delete entry.flag;
   try {
     savePins(pins, env);
   } catch {
@@ -300,53 +322,134 @@ function askAboutChanges(toolName, settings) {
 }
 
 /**
- * Session start: re-read the pinned servers not read in the last day and tell
- * the person about any whose tools changed. A session start cannot ask, so
- * this is a message; the ask comes at the first call to one of that server's
- * tools. A server with no name to match a tool call by is told about here and
- * its new tools pinned at once.
+ * Session start. Pick up the servers in the config that have no pin yet, however
+ * they got there, re-read the pinned ones not read in the last day, and check the
+ * exact package versions local servers run. A session start cannot ask, so this
+ * is a message; the ask comes at the first call to one of that server's tools. A
+ * server with no name to match a tool call by is told about here and its new
+ * tools pinned at once.
  */
-async function recheckPins(settings, options) {
-  if (settings.offline || !settings.readServers) return null;
+async function atSessionStart(hookInput, settings, options) {
+  if (settings.offline) return null;
   const env = settings.env ?? process.env;
-  if (!hasPins(env)) return null;
-  const pins = loadPins(env);
-  const due = dueForRecheck(pins);
-  if (due.length === 0) return null;
   const started = Date.now();
-  // Never mint here: a pin means a key was had before, and a session start
-  // should not be the thing that asks for a new one.
-  const key = await obtainKey({ env, origin: settings.origin, mint: false });
-  if (key === null) return null;
-  // Mark the attempt first: if the window closes mid-read, a slow server still
-  // waits a day instead of holding up every session start until then.
-  const now = new Date().toISOString();
-  for (const url of due) pins.servers[url].checked_at = now;
+  const now = new Date();
+  const pins = loadPins(env);
+  const config = configuredServers({ cwd: hookInput?.cwd, env });
+  const found = settings.readServers ? config.remote.filter((s) => !(s.url in pins.servers) && retryDue(pins.seen[s.url], now)).slice(0, MAX_RECHECK) : [];
+  const due = settings.readServers ? dueForRecheck(pins, now).slice(0, MAX_RECHECK - found.length) : [];
+  // A package is checked once a day until a match has been told: advisories get
+  // published after a version is in someone's config, and that is the point.
+  const packages = config.packages.filter((p) => {
+    const record = pins.seen[`pkg:${p.name}@${p.version}`];
+    return !record?.told && (!record || now.getTime() - Date.parse(record.checked_at) >= RECHECK_MS);
+  });
+  if (found.length === 0 && due.length === 0 && packages.length === 0) return null;
+
+  // Mark the attempts first: if the window closes mid-read, a slow server still
+  // waits instead of holding up every session start until then.
+  for (const { url } of found) noteAttempt(pins, url, now);
+  for (const url of due) pins.servers[url].checked_at = now.toISOString();
   try {
     savePins(pins, env);
   } catch {
     return null;
   }
+
   const fetchImpl = options.fetchImpl ?? fetch;
+  // Only a server with no pin yet may ask for a new key: re-reading pins means a
+  // key was had before, and an empty config should never be the reason to mint.
+  const key =
+    found.length + due.length > 0
+      ? await obtainKey({ env, origin: settings.origin, timeoutMs: Math.min(1500, settings.sessionTimeoutMs), clientTag: options.clientTag, mint: found.length > 0, fetchImpl })
+      : null;
   const left = settings.sessionTimeoutMs - (Date.now() - started);
   if (left < 200) return null;
-  const scans = await Promise.all(
-    due.map((url) => scanRemoteServer(url, { origin: settings.origin, key, timeoutMs: left, clientTag: options.clientTag, fetchImpl })),
-  );
+  const scan = (url) => scanRemoteServer(url, { origin: settings.origin, key, timeoutMs: left, clientTag: options.clientTag, fetchImpl });
+  const [foundScans, dueScans, answer] = await Promise.all([
+    key === null ? [] : Promise.all(found.map(({ url }) => scan(url))),
+    key === null ? [] : Promise.all(due.map(scan)),
+    packages.length === 0
+      ? null
+      : checkSpecs(packages, { origin: settings.origin, path: settings.path, timeoutMs: left, clientTag: options.clientTag, fetchImpl: options.fetchImpl }).catch(() => null),
+  ]);
+
   const fresh = [];
   due.forEach((url, i) => {
+    if (key === null) return;
     const entry = pins.servers[url];
-    const outcome = recordRecheck(entry, { fingerprint: scans[i]?.fingerprint ?? null, scan: scans[i] });
+    const outcome = recordRecheck(entry, { fingerprint: dueScans[i]?.fingerprint ?? null, scan: dueScans[i] });
     if (outcome === 'changed') fresh.push([url, entry]);
   });
-  const message = fresh.length > 0 ? buildChangeMessage(fresh) : null;
+
+  const pinnedClean = [];
+  const concerning = [];
+  found.forEach((server, i) => {
+    const result = foundScans[i] ?? null;
+    if (isConcerning(result)) concerning.push(result);
+    if (!result?.fingerprint) return;
+    pinServer(pins, { url: server.url, name: server.name, fingerprint: result.fingerprint, now });
+    delete pins.seen[server.url];
+    if (isConcerning(result)) flagServer(pins.servers[server.url], result, now);
+    else pinnedClean.push(server);
+  });
+
+  if (answer !== null) {
+    for (const p of packages) noteAttempt(pins, `pkg:${p.name}@${p.version}`, now);
+    for (const hit of answer.hits) noteAttempt(pins, `pkg:${hit.name}@${hit.version}`, now).told = true;
+  }
+
+  const parts = [];
+  if (concerning.length > 0) parts.push(buildConfiguredConcernMessage(concerning, found));
+  if (answer !== null && answer.hits.length > 0) parts.push(buildConfiguredPackageMessage(answer.hits, packages));
+  if (fresh.length > 0) parts.push(buildChangeMessage(fresh));
+  if (pinnedClean.length > 0) parts.push(buildPickedUpMessage(pinnedClean));
   for (const [, entry] of fresh) if (!entry.name) acceptChange(entry);
   try {
     savePins(pins, env);
   } catch {
     return null;
   }
-  return message === null ? null : { systemMessage: message };
+  return parts.length === 0 ? null : { systemMessage: parts.join('\n\n') };
+}
+
+/** What a session start says when a first read of a server in the config found something. */
+export function buildConfiguredConcernMessage(results, servers) {
+  const named = results.every((r) => servers.find((s) => s.url === r.url)?.name && r.fingerprint);
+  return [
+    results.length === 1
+      ? 'Lazaretto read the tools of an MCP server in your config and found something worth a look:'
+      : `Lazaretto read the tools of ${results.length} MCP servers in your config and found something worth a look:`,
+    '',
+    ...results.map(describeServer),
+    '',
+    `These are signals from reading the text the server hands an agent, not a verdict on whoever runs it.${named ? ' Claude Code will ask before the first call to its tools.' : ''}`,
+  ].join('\n');
+}
+
+/** What a session start says when a local server runs a version with a published advisory. */
+export function buildConfiguredPackageMessage(hits, packages) {
+  const lines = [
+    hits.length === 1
+      ? 'Lazaretto: an MCP server in your config runs a package version with a published malicious-package advisory.'
+      : `Lazaretto: MCP servers in your config run ${hits.length} package versions with published malicious-package advisories.`,
+    '',
+  ];
+  for (const hit of hits) {
+    const target = packages.find((t) => t.name === hit.name && t.version === hit.version);
+    lines.push(`  ${hit.name}@${hit.version}${target ? ` (via ${target.via})` : ''}  ${hit.ids.length > 0 ? hit.ids.join(', ') : 'no advisory id returned'}`);
+  }
+  lines.push('', `Read each advisory yourself at ${ADVISORY_URL}<id>. A local server starts with the session, so it may already be running. Lazaretto tells you about this once.`);
+  return lines.join('\n');
+}
+
+/** Said once per server: what was just read, because it was not handed to us by a command. */
+export function buildPickedUpMessage(servers) {
+  const names = servers.map((s) => s.name ?? new URL(s.url).hostname).join(', ');
+  return (
+    `Lazaretto read the tools of ${servers.length === 1 ? 'an MCP server' : `${servers.length} MCP servers`} in your config (${names}) and kept a fingerprint. ` +
+    'No rule matched, which is not proof a server is harmless. You will hear about it if the tools change. LAZARETTO_GUARD_MODE=advisories turns these reads off.'
+  );
 }
 
 /** What a session start says about servers whose tools changed. */
