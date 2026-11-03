@@ -3,17 +3,20 @@
   "name": "lazaretto-plugins",
   "description": "Claude Code plugins from Lazaretto. lazaretto-guard reads a remote MCP server's tool descriptions for poisoning before it is connected, and checks pinned package installs against published malware advisories. It only ever asks, never blocks.",
   "owner": {
-    "name": "James Dykstra",
-    "email": "jamesdfinance@gmail.com"
+    "name": "Lazaretto",
+    "email": "contact@lazaretto.dev",
+    "url": "https://lazaretto.dev"
   },
   "plugins": [
     {
       "name": "lazaretto-guard",
-      "description": "Before an agent connects a remote MCP server, read the tools it advertises for tool poisoning and hidden orders, pin them, and ask before the first use of a server whose tools changed since (re-read once a day at session start); before an install, check pinned package versions against published malicious-package advisories. Ask rather than block on anything found. Sends package names and versions, and a remote server's URL with a free key (at the add, once a day for pinned servers, and for remote servers already in Claude Code's config, after saying so once); never a URL that carries a secret. Never blocks, never exits non-zero.",
-      "version": "0.4.1",
+      "displayName": "Lazaretto Guard",
+      "description": "Reads a remote MCP server's tools for tool poisoning and hidden orders before your agent connects it, pins them, and asks before the first use of a server whose tools have changed since (re-read once a day at session start). Before an install, checks pinned package versions against published malicious-package advisories. Asks rather than blocks on anything found. Sends package names and versions, and a remote server's URL with a free key (at the add, once a day for pinned servers, and for remote servers already in Claude Code's config, after saying so once); never a URL that carries a secret. Never blocks, never exits non-zero.",
+      "version": "0.4.2",
       "author": {
-        "name": "James Dykstra",
-        "email": "jamesdfinance@gmail.com"
+        "name": "Lazaretto",
+        "email": "contact@lazaretto.dev",
+        "url": "https://lazaretto.dev"
       },
       "category": "security",
       "source": "./plugins/lazaretto-guard",
