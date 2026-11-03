@@ -1,7 +1,7 @@
 {
   "name": "lazaretto-guard",
   "displayName": "Lazaretto Guard",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Reads a remote MCP server's tools for tool poisoning and hidden orders before your agent connects it, pins them, and asks before the first use of a server whose tools have changed since (re-read once a day at session start). Before an install, checks pinned package versions against published malicious-package advisories. Asks rather than blocks on anything found. Sends package names and versions, and a remote server's URL with a free key (at the add, once a day for pinned servers, and for remote servers already in Claude Code's config, after saying so once); never a URL that carries a secret. Never blocks, never exits non-zero.",
   "author": {
     "name": "Lazaretto",
@@ -10,6 +10,10 @@
   },
   "homepage": "https://lazaretto.dev",
   "icon": "./icon.png",
+  "documentationUrl": "https://lazaretto.dev/agents#guard",
+  "supportUrl": "https://github.com/jamesdfinance-dev/lazaretto-plugins/issues",
+  "privacyPolicyUrl": "https://lazaretto.dev/privacy",
+  "termsOfServiceUrl": "https://lazaretto.dev/terms",
   "license": "MIT",
   "keywords": [
     "security",

@@ -20,6 +20,7 @@ import {
   describeServer,
 } from './mcp-scan.mjs';
 import { configuredServers, knownServerUrls } from './discover.mjs';
+import { fileURLToPath } from 'node:url';
 import {
   hasPins,
   loadPins,
@@ -38,6 +39,10 @@ import {
   pendingForTool,
   describeChange,
 } from './pins.mjs';
+
+// The plugin's own command line tool. `bin/` is not used: claude.ai and Cowork refuse a
+// plugin that has one, so this is not on PATH and messages give the full path.
+const CLI_PATH = fileURLToPath(new URL('../cli/lazaretto-guard.mjs', import.meta.url));
 
 /** Where a person goes to read the advisory behind an id, for themselves. */
 const ADVISORY_URL = 'https://osv.dev/vulnerability/';
@@ -458,7 +463,7 @@ export function buildDiscoveryNotice(unseen) {
   lines.push('');
   lines.push(
     'Each URL goes to lazaretto.dev, whose scanner connects to the server and lists its tools; a free key is requested if you do not have one. Servers with auth headers or OAuth settings, private hostnames, or a token in the URL are skipped. ' +
-      'To turn this off, set LAZARETTO_GUARD_DISCOVER=off in the env section of your Claude Code settings. For one server, run: lazaretto-guard unpin <url>',
+      'To turn this off, set LAZARETTO_GUARD_DISCOVER=off in the env section of your Claude Code settings. For one server, run: ' + `node "${CLI_PATH}" unpin <url>`,
   );
   return lines.join('\n');
 }

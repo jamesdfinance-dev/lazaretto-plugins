@@ -24,7 +24,7 @@ import { shareableUrl } from '../lib/mcp-scan.mjs';
 import { loadPins, savePins, pinsPath, RECHECK_MS } from '../lib/pins.mjs';
 
 const HOOK = fileURLToPath(new URL('../hooks/guard.mjs', import.meta.url));
-const CLI = fileURLToPath(new URL('../bin/lazaretto-guard.mjs', import.meta.url));
+const CLI = fileURLToPath(new URL('../cli/lazaretto-guard.mjs', import.meta.url));
 const URL_A = 'https://a.example.com/mcp';
 const URL_B = 'https://b.example.com/mcp';
 const sha = (s) => createHash('sha256').update(s).digest('hex');

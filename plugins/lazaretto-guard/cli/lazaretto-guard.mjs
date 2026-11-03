@@ -155,7 +155,7 @@ async function main(argv) {
     try {
       url = new URL(args[0]).toString();
     } catch {
-      out(`Not a URL: ${args[0]}. Run \`lazaretto-guard pins\` for the exact URLs.`);
+      out(`Not a URL: ${args[0]}. Run this tool's \`pins\` command for the exact URLs.`);
       return 1;
     }
     const pins = loadPins(process.env);
