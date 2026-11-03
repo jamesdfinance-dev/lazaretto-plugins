@@ -53,7 +53,7 @@ A clean install produces no prompt. It is not free, though: the hook adds up to 
 You can also run the same check by hand, with no agent involved:
 
 ```
-node plugins/lazaretto-guard/bin/lazaretto-guard.mjs check chalk@5.6.1
+node plugins/lazaretto-guard/cli/lazaretto-guard.mjs check chalk@5.6.1
 ```
 
 ## Turn it off
@@ -100,8 +100,8 @@ The hook reads both the terminal rendering that `/check` returns and the JSON th
 or directly:
 
 ```
-node plugins/lazaretto-guard/bin/lazaretto-guard.mjs hash node_modules/some-package
-node plugins/lazaretto-guard/bin/lazaretto-guard.mjs verify node_modules/some-package sha256:...
+node plugins/lazaretto-guard/cli/lazaretto-guard.mjs hash node_modules/some-package
+node plugins/lazaretto-guard/cli/lazaretto-guard.mjs verify node_modules/some-package sha256:...
 ```
 
 Both run entirely on this machine.

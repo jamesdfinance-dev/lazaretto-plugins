@@ -13,9 +13,9 @@ The pre-install check answers a question about an identity: this name at this ve
 Run, with `$ARGUMENTS` giving the path and, when the user has one, the expected hash:
 
 - With a path and an expected hash:
-  `node "${CLAUDE_PLUGIN_ROOT}/bin/lazaretto-guard.mjs" verify <path> <expected-hash>`
+  `node "${CLAUDE_PLUGIN_ROOT}/cli/lazaretto-guard.mjs" verify <path> <expected-hash>`
 - With a path only, to produce the hash to record:
-  `node "${CLAUDE_PLUGIN_ROOT}/bin/lazaretto-guard.mjs" hash <path>`
+  `node "${CLAUDE_PLUGIN_ROOT}/cli/lazaretto-guard.mjs" hash <path>`
 
 Both run entirely on this machine and send nothing.
 

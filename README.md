@@ -61,7 +61,7 @@ Set `LAZARETTO_GUARD_MODE`:
 | --- | --- |
 | `full` (default) | Package names and exact versions, on install commands. When a remote MCP server is being connected, that server's URL and the free key. At session start, the URLs of pinned servers once a day, and of remote servers in your Claude Code config once you have been told, with the same key. |
 | `advisories` | Package names and exact versions, on install commands only. No server URL is sent, no key is requested, the config is not read, and pinned servers are not read again. |
-| `hash` | Nothing from the hook. `lazaretto-guard lookup <path>` sends only a sha256 of content already on your disk: no name, no version, no path. |
+| `hash` | Nothing from the hook. The `lookup` command sends only a sha256 of content already on your disk: no name, no version, no path. |
 | `offline` | Nothing, ever. `hash` and `verify` still work, entirely locally. |
 | `off` | The hook does nothing. Same as `LAZARETTO_GUARD_DISABLE=1`. |
 
@@ -69,7 +69,7 @@ Each request also reveals your IP address to the server, the same as any HTTPS r
 
 Other settings: `LAZARETTO_GUARD_DISCOVER=off` (do not read servers from your Claude Code config; servers added through Claude still are), `LAZARETTO_GUARD_API` (a different origin, for both checks), `LAZARETTO_GUARD_API_PATH`, `LAZARETTO_GUARD_TIMEOUT_MS`, `LAZARETTO_GUARD_BUDGET_MS`, `LAZARETTO_GUARD_MCP_TIMEOUT_MS`, `LAZARETTO_GUARD_MCP_BUDGET_MS`, `LAZARETTO_GUARD_SESSION_TIMEOUT_MS`, `LAZARETTO_GUARD_SESSION_BUDGET_MS`, `LAZARETTO_API_KEY` (your own key for the server read, in place of the free one), `XDG_CONFIG_HOME` (moves the key and pin files to `$XDG_CONFIG_HOME/lazaretto/`).
 
-`lazaretto-guard pins` lists the pinned servers, and `lazaretto-guard unpin <url>` forgets one and stops it being read from your config, for example a server you do not want read. Adding it through Claude reads it again. Neither touches the network.
+`node <plugin folder>/cli/lazaretto-guard.mjs pins` lists the pinned servers, and the same tool's `unpin <url>` forgets one and stops it being read from your config, for example a server you do not want read. Adding it through Claude reads it again. Neither touches the network.
 
 ## Install
 
@@ -99,7 +99,7 @@ plugins/lazaretto-guard/
   lib/version.mjs                 the client string sent with every request
   lib/decide.mjs                  ask, or nothing
   lib/hash.mjs                    the on-disk re-hash, network free
-  bin/lazaretto-guard.mjs         hash, verify, lookup, check, pins, unpin, by hand
+  cli/lazaretto-guard.mjs         hash, verify, lookup, check, pins, unpin, by hand
   commands/lazaretto-verify.md    the slash command
   test/                           node --test, no dependencies
 ```

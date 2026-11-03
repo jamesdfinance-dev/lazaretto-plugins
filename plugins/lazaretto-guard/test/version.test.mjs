@@ -73,7 +73,7 @@ test('the marketplace entry agrees with the manifest', (t) => {
 });
 
 test('neither entry point hardcodes a version', () => {
-  for (const file of [HOOK, path.join(ROOT, 'bin', 'lazaretto-guard.mjs')]) {
+  for (const file of [HOOK, path.join(ROOT, 'cli', 'lazaretto-guard.mjs')]) {
     const source = readFileSync(file, 'utf8');
     assert.doesNotMatch(source, /lazaretto-guard\/\$\{?\d|lazaretto-guard\/\d/, `${file} carries its own version`);
   }
